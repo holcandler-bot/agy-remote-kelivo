@@ -36,6 +36,7 @@ jobs:
           cp -r /tmp/agy_src_backup/lib ./lib
           cp -r /tmp/agy_src_backup/assets ./assets
           flutter pub get
+          find "$HOME/.pub-cache" -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize.txt/g" {} +
 
       - name: Configure AndroidManifest Permissions & WebView Settings
         run: |
@@ -55,10 +56,10 @@ jobs:
               f.write(content)
           EOF
 
-      - name: Build Release APK (ARM64 & Universal)
+      - name: Verify Dart Sources & Build Release APK
         run: |
-          flutter build apk --release --split-per-abi
-          flutter build apk --release
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+          flutter build apk --release --no-tree-shake-icons
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
