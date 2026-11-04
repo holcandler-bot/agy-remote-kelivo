@@ -1,0 +1,24 @@
+name: agy_remote_flutter
+description: "Antigravity Remote Agent Mobile Client — 1:1 Kelivo (Chevey339/kelivo) Art-Grade Edition. Uses personal Google AI Pro/Ultra subscription quota via headless InAppWebView bridge."
+publish_to: 'none'
+version: 2.1.0+3
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_inappwebview: ^6.1.5
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/agy_bridge.js
