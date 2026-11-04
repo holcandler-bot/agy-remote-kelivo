@@ -1,0 +1,67 @@
+name: Build AgyRemote Kelivo APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-flutter-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter SDK (Stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Generate Android Platform Scaffolding Safely
+        run: |
+          mkdir -p /tmp/agy_src_backup
+          cp pubspec.yaml /tmp/agy_src_backup/
+          cp -r lib /tmp/agy_src_backup/
+          cp -r assets /tmp/agy_src_backup/
+          flutter create --platforms=android --org com.antigravity.remote --project-name agy_remote_flutter .
+          cp /tmp/agy_src_backup/pubspec.yaml ./pubspec.yaml
+          rm -rf ./lib ./test
+          cp -r /tmp/agy_src_backup/lib ./lib
+          cp -r /tmp/agy_src_backup/assets ./assets
+          flutter pub get
+
+      - name: Configure AndroidManifest Permissions & WebView Settings
+        run: |
+          python3 - << 'EOF'
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r", encoding="utf-8") as f:
+              content = f.read()
+          perms = """<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>"""
+          if "android.permission.INTERNET" not in content:
+              content = content.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">', perms, 1)
+          if 'android:usesCleartextTraffic="true"' not in content:
+              content = content.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(content)
+          EOF
+
+      - name: Build Release APK (ARM64 & Universal)
+        run: |
+          flutter build apk --release --split-per-abi
+          flutter build apk --release
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgyRemote-Kelivo-Release-APK
+          path: build/app/outputs/flutter-apk/*.apk
