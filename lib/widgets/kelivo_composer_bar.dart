@@ -24,6 +24,9 @@ class KelivoComposerBar extends StatefulWidget {
   final VoidCallback onToggleWebSearch;
   final VoidCallback onToggleFullAccess;
   final ValueChanged<String> onQuickCommand;
+  final VoidCallback? onTapModelPicker;
+  final VoidCallback? onOpenGoogleLogin;
+  final VoidCallback? onOpenSettings;
 
   const KelivoComposerBar({
     super.key,
@@ -42,6 +45,9 @@ class KelivoComposerBar extends StatefulWidget {
     required this.onToggleWebSearch,
     required this.onToggleFullAccess,
     required this.onQuickCommand,
+    this.onTapModelPicker,
+    this.onOpenGoogleLogin,
+    this.onOpenSettings,
   });
 
   @override
@@ -78,7 +84,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
     super.dispose();
   }
 
-  void _toggleVoice() {
+  void _toggleVoice({bool commit = false}) {
     HapticFeedback.mediumImpact();
     setState(() {
       _voiceRecording = !_voiceRecording;
@@ -86,7 +92,51 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
         _waveCtrl.repeat(reverse: true);
       } else {
         _waveCtrl.stop();
+        if (commit) {
+          final current = widget.controller.text.trim();
+          final addition = current.isEmpty
+              ? '请检查当前云端仓库的构建状态并运行测试套件'
+              : '$current ';
+          widget.controller.text = addition;
+          widget.controller.selection = TextSelection.fromPosition(
+            TextPosition(offset: widget.controller.text.length),
+          );
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('语音指令已转写填入输入框'),
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
       }
+    });
+  }
+
+  Future<void> _pasteClipboardCode() async {
+    HapticFeedback.lightImpact();
+    final data = await Clipboard.getData('text/plain');
+    final clip = (data?.text ?? '').trim();
+    if (!mounted) return;
+    setState(() => _showToolsSheet = false);
+    if (clip.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('剪贴板为空，请先复制代码或报错日志'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    final formatted = widget.controller.text.trim().isEmpty
+        ? '请帮我分析以下剪贴板代码/日志：\n```\n$clip\n```\n'
+        : '${widget.controller.text}\n```\n$clip\n```\n';
+    setState(() {
+      widget.controller.text = formatted;
+      widget.controller.selection = TextSelection.fromPosition(
+        TextPosition(offset: widget.controller.text.length),
+      );
     });
   }
 
@@ -125,11 +175,15 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
                         Icon(
                           Icons.dns_outlined,
                           size: 13,
-                          color: colors.success,
+                          color: widget.fullAccessEnabled
+                              ? colors.warning
+                              : colors.success,
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          'Cloud Sandbox · ${widget.currentBranch}',
+                          widget.fullAccessEnabled
+                              ? 'Full Access · ${widget.currentBranch}'
+                              : 'Cloud Sandbox · ${widget.currentBranch}',
                           style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: AppFontWeights.semibold,
@@ -139,11 +193,11 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
                       ],
                     ),
                   ),
-                  if (widget.approval.pending)
+                  if (widget.approval.pending) ...[
                     IosCardPress(
                       onTap: widget.onApprove,
                       borderRadius: BorderRadius.circular(999),
-                      baseColor: colors.warning.withValues(alpha: 0.14),
+                      baseColor: colors.warning.withValues(alpha: 0.16),
                       padding: const EdgeInsets.symmetric(
                         horizontal: 10,
                         vertical: 5,
@@ -158,7 +212,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
                           ),
                           const SizedBox(width: 5),
                           Text(
-                            '待审批: ${widget.approval.commandOrFile}',
+                            '点击批准: ${widget.approval.commandOrFile}',
                             style: TextStyle(
                               fontSize: 11.5,
                               fontWeight: AppFontWeights.semibold,
@@ -168,6 +222,24 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
                         ],
                       ),
                     ),
+                    IosCardPress(
+                      onTap: widget.onDeny,
+                      borderRadius: BorderRadius.circular(999),
+                      baseColor: cs.error.withValues(alpha: 0.14),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 5,
+                      ),
+                      child: Text(
+                        '拒绝',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: AppFontWeights.semibold,
+                          color: cs.error,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -283,6 +355,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
                                   setState(() {});
                                 }
                               },
+                              onSubmitted: (_) => widget.onSend(),
                               style: TextStyle(
                                 fontSize: 15,
                                 height: 1.42,
@@ -351,15 +424,12 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
 
     return Row(
       children: [
-        // 1. Model Avatar Button
-        Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: cs.primary.withValues(alpha: 0.14),
-          ),
-          alignment: Alignment.center,
+        // 1. Model Avatar Button (opens Model Picker Sheet)
+        IosCardPress(
+          onTap: widget.onTapModelPicker,
+          borderRadius: BorderRadius.circular(999),
+          baseColor: cs.primary.withValues(alpha: 0.14),
+          padding: const EdgeInsets.all(6),
           child: Icon(
             Icons.auto_awesome_outlined,
             size: 15,
@@ -396,9 +466,10 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
 
         // 3. Web Search Toggle (`Lucide.Globe`)
         IosIconButton(
-          icon: Icons.language_rounded,
+          icon: Icons.travel_explore_rounded,
           size: 19,
           padding: const EdgeInsets.all(6),
+          tooltip: widget.webSearchEnabled ? '已开启联网检索' : '已关闭联网检索',
           color: widget.webSearchEnabled
               ? cs.primary
               : cs.onSurface.withValues(alpha: 0.54),
@@ -413,9 +484,10 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
               icon: Icons.folder_copy_outlined,
               size: 19,
               padding: const EdgeInsets.all(6),
-              color: widget.fullAccessEnabled
-                  ? colors.warning
-                  : cs.primary,
+              tooltip: widget.fullAccessEnabled
+                  ? 'Full Access 免确认模式'
+                  : '标准安全审批模式',
+              color: widget.fullAccessEnabled ? colors.warning : cs.primary,
               onTap: widget.onToggleFullAccess,
             ),
             Positioned(
@@ -440,6 +512,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
           icon: Icons.bolt_rounded,
           size: 19,
           padding: const EdgeInsets.all(6),
+          tooltip: '快捷指令面板 (/)',
           color: _showSlashDrawer
               ? cs.primary
               : cs.onSurface.withValues(alpha: 0.54),
@@ -450,8 +523,18 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
 
         // Right Cluster:
         // 6. `ContextUsageRing` (18x18 circular progress gauge)
-        Tooltip(
-          message: '上下文占用 ${(widget.contextUsage * 100).round()}%',
+        GestureDetector(
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '当前云端会话上下文占用 ${(widget.contextUsage * 100).round()}% · 输入 /compact 可释放上下文',
+                ),
+                duration: const Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          },
           child: SizedBox(
             width: 22,
             height: 22,
@@ -488,7 +571,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
           size: 19,
           padding: const EdgeInsets.all(5),
           color: cs.onSurface.withValues(alpha: 0.68),
-          onTap: _toggleVoice,
+          onTap: () => _toggleVoice(commit: false),
         ),
         const SizedBox(width: 4),
 
@@ -533,7 +616,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
           icon: Icons.close_rounded,
           size: 18,
           color: cs.error,
-          onTap: _toggleVoice,
+          onTap: () => _toggleVoice(commit: false),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -557,7 +640,7 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
           icon: Icons.check_circle_rounded,
           size: 22,
           color: cs.primary,
-          onTap: _toggleVoice,
+          onTap: () => _toggleVoice(commit: true),
         ),
       ],
     );
@@ -567,24 +650,35 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
     final cs = Theme.of(context).colorScheme;
     final colors = context.appColors;
 
-    Widget buildMediaTile(IconData icon, String label) {
+    Widget buildActionTile({
+      required IconData icon,
+      required String label,
+      required VoidCallback onTap,
+      Color? accentColor,
+    }) {
       return Expanded(
         child: IosCardPress(
-          onTap: () {},
+          onTap: onTap,
           baseColor: colors.chatQuietFill,
           borderRadius: BorderRadius.circular(14),
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 22, color: cs.onSurface.withValues(alpha: 0.82)),
+              Icon(
+                icon,
+                size: 21,
+                color: accentColor ?? cs.onSurface.withValues(alpha: 0.85),
+              ),
               const SizedBox(height: 6),
               Text(
                 label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: 11.5,
                   fontWeight: AppFontWeights.medium,
-                  color: cs.onSurface.withValues(alpha: 0.78),
+                  color: cs.onSurface.withValues(alpha: 0.82),
                 ),
               ),
             ],
@@ -595,16 +689,40 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
 
     return Padding(
       padding: const EdgeInsets.only(top: 10),
-      child: Column(
+      child: Row(
         children: [
-          Row(
-            children: [
-              buildMediaTile(Icons.photo_camera_outlined, '拍照识码'),
-              const SizedBox(width: 8),
-              buildMediaTile(Icons.photo_library_outlined, '相册截图'),
-              const SizedBox(width: 8),
-              buildMediaTile(Icons.upload_file_outlined, '上传仓库补丁'),
-            ],
+          buildActionTile(
+            icon: Icons.login_rounded,
+            label: '登录 Google',
+            accentColor: cs.primary,
+            onTap: () {
+              setState(() => _showToolsSheet = false);
+              widget.onOpenGoogleLogin?.call();
+            },
+          ),
+          const SizedBox(width: 8),
+          buildActionTile(
+            icon: Icons.content_paste_go_rounded,
+            label: '粘贴剪贴板代码',
+            onTap: _pasteClipboardCode,
+          ),
+          const SizedBox(width: 8),
+          buildActionTile(
+            icon: Icons.difference_outlined,
+            label: '审查分支 Diff',
+            onTap: () {
+              setState(() => _showToolsSheet = false);
+              widget.onQuickCommand('/diff 请审查当前分支修改并指出潜在风险');
+            },
+          ),
+          const SizedBox(width: 8),
+          buildActionTile(
+            icon: Icons.tune_rounded,
+            label: '账号与设置',
+            onTap: () {
+              setState(() => _showToolsSheet = false);
+              widget.onOpenSettings?.call();
+            },
           ),
         ],
       ),
