@@ -394,8 +394,115 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
         await _webCtrl?.loadUrl(
           urlRequest: URLRequest(url: WebUri(targetUrl)),
         );
+      } else if (!visible) {
+        await _webCtrl?.evaluateJavascript(
+          source: 'window.AgyBridge && window.AgyBridge.syncNow();',
+        );
       }
     } catch (_) {}
+  }
+
+  Future<void> _syncModelAndThinkingToWeb(
+    String modelName,
+    String thinkingLevel,
+  ) async {
+    final normalizedModel = AgyModelCatalog.normalizeModelName(modelName);
+    final normalizedThinking =
+        AgyModelCatalog.normalizeThinkingLevel(normalizedModel, thinkingLevel);
+    setState(() {
+      _selectedModel = normalizedModel;
+      _thinkingBudget = normalizedThinking;
+    });
+    try {
+      final mJson = jsonEncode(normalizedModel);
+      final tJson = jsonEncode(normalizedThinking);
+      await _webCtrl?.evaluateJavascript(
+        source:
+            'window.AgyBridge && window.AgyBridge.setModelAndThinking($mJson, $tJson);',
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _openCloudProjectResources() async {
+    HapticFeedback.selectionClick();
+    await _setWebViewVisible(true, targetUrl: _configuredHostUrl);
+    try {
+      await _webCtrl?.evaluateJavascript(
+        source: 'window.AgyBridge && window.AgyBridge.openProjectSelector();',
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          '已切入云端工作台 · 可直接选择或新建 Remote Project 并挂载 GitHub 仓库',
+        ),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _attachGoogleDriveResource() async {
+    HapticFeedback.selectionClick();
+    await _setWebViewVisible(true);
+    try {
+      await _webCtrl?.evaluateJavascript(
+        source:
+            'window.AgyBridge && window.AgyBridge.triggerAttachment("drive");',
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          '已打开云端工作台 · 请在 Project Resources 或输入栏中选择 Google Drive 文档',
+        ),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _uploadLocalFileResource() async {
+    HapticFeedback.selectionClick();
+    await _setWebViewVisible(true);
+    try {
+      await _webCtrl?.evaluateJavascript(
+        source:
+            'window.AgyBridge && window.AgyBridge.triggerAttachment("upload");',
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          '已触发云端附件上传 (单文件最大 8 MiB，自动挂载至 /home/antigravity/upload)',
+        ),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _openMarketplacePlugins() async {
+    HapticFeedback.selectionClick();
+    try {
+      await _webCtrl?.evaluateJavascript(
+        source: 'window.AgyBridge && window.AgyBridge.openPluginManager();',
+      );
+    } catch (_) {}
+    await _setWebViewVisible(true);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          '已打开 Customizations / Plugins · 可一键授权 GitHub、Google Drive、Docs 等插件',
+        ),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _openGoogleLoginFlow() async {
@@ -466,7 +573,10 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
     final url = (map['url'] ?? '').toString();
     final needsLogin = map['needsLogin'] == true;
     final isAuth = map['isAuthenticated'] == true;
+    final isGenerating = map['isGenerating'] == true;
     final email = (map['userEmail'] ?? '').toString().trim();
+    final syncedModel = (map['activeModel'] ?? '').toString().trim();
+    final syncedThinking = (map['thinkingLevel'] ?? '').toString().trim();
 
     final rawTurns = (map['turns'] as List?) ?? const [];
     final parsedTurns = rawTurns
@@ -478,6 +588,8 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
     final parsedApproval = rawApproval is Map
         ? PendingApprovalRequest.fromJson(Map<String, dynamic>.from(rawApproval))
         : null;
+
+    final rcLink = RemoteSessionInfo.tryParseRemoteControlUrl(url);
 
     if (!mounted) return;
     bool turnsChanged = false;
@@ -492,15 +604,33 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
         _userEmail = email;
         _isGoogleAuthenticated = true;
       }
-      if (parsedTurns.isNotEmpty) {
-        _isStreaming = false;
+      if (syncedModel.isNotEmpty) {
+        _selectedModel = AgyModelCatalog.normalizeModelName(syncedModel);
+      }
+      if (syncedThinking.isNotEmpty) {
+        _thinkingBudget = AgyModelCatalog.normalizeThinkingLevel(
+          _selectedModel,
+          syncedThinking,
+        );
+      }
+      if (rcLink != null && _activeSession.instanceId != rcLink.instanceId) {
         _sessions[_activeSessionIndex] = _activeSession.copyWith(
-          status: 'idle',
+          mode: 'remote_control',
+          instanceId: rcLink.instanceId,
+          remoteUrl: rcLink.normalizedUrl,
+          branch: rcLink.instanceId,
+        );
+        turnsChanged = true;
+      }
+      if (parsedTurns.isNotEmpty) {
+        _isStreaming = isGenerating;
+        _sessions[_activeSessionIndex] = _activeSession.copyWith(
+          status: isGenerating ? 'running' : 'idle',
           turns: parsedTurns,
           approval: parsedApproval ?? _activeSession.approval,
         );
         turnsChanged = true;
-      } else if (parsedApproval != null && parsedApproval.pending) {
+      } else if (parsedApproval != null) {
         _sessions[_activeSessionIndex] = _activeSession.copyWith(
           approval: parsedApproval,
         );
@@ -603,9 +733,13 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
     } catch (_) {}
 
     if (dispatchedToWeb) {
-      // 成功注入网页端聊天框，等待 onAgyStateSync 同步真实 DOM 回复，或 2.5s 后更新状态提示
-      await Future.delayed(const Duration(milliseconds: 1600));
-      if (!mounted || !_isStreaming) return;
+      // 成功注入网页端聊天框，交由 onAgyStateSync 实时同步真实 DOM 消息流与 isGenerating 状态；
+      // 若 4.5s 后网页 DOM 尚未被解析为独立 turn，则更新占位说明但保留用户随时点【网页】查看实景的入口
+      await Future.delayed(const Duration(milliseconds: 4500));
+      if (!mounted) return;
+      final stillPlaceholder =
+          _activeSession.turns.any((t) => t.id == thinkingTurnId);
+      if (!stillPlaceholder) return;
       setState(() => _isStreaming = false);
       _updateActiveSession((s) {
         final updated = s.turns.map((t) {
@@ -613,8 +747,8 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
           return t.copyWith(
             thinkingActive: false,
             content:
-                '指令已成功注入云端页面并触发执行！若云端正在长任务流式输出，可随时点击顶栏右侧【网页】胶囊切入实景视图查看实时进度。',
-            tokenStats: 'dispatched · live',
+                '指令已送达云端工作台并开始执行！若当前长任务包含复杂沙盒终端输出或 Implementation Plan，可点击顶栏右侧【网页】切入实景控制台。',
+            tokenStats: 'running on cloud',
           );
         }).toList();
         return s.copyWith(status: 'idle', turns: updated);
@@ -755,10 +889,17 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
     );
   }
 
-  void _createNewSessionDialog(BuildContext context) {
-    final titleCtrl = TextEditingController();
-    final repoCtrl = TextEditingController(text: 'antigravity.google.com');
-    final branchCtrl = TextEditingController(text: 'main');
+  Future<void> _openRemoteControlLinkDialog(BuildContext context) async {
+    final clipData = await Clipboard.getData('text/plain');
+    final clipText = (clipData?.text ?? '').trim();
+    final detected = RemoteSessionInfo.tryParseRemoteControlUrl(clipText);
+    final linkCtrl = TextEditingController(
+      text: detected?.normalizedUrl ?? '',
+    );
+    final titleCtrl = TextEditingController(
+      text: detected != null ? '远程主机 · ${detected.instanceId}' : '',
+    );
+    if (!context.mounted) return;
     final cs = Theme.of(context).colorScheme;
 
     showDialog(
@@ -769,75 +910,262 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(22),
           ),
-          title: const Text(
-            '新建云端 Remote Agent 会话',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
+          title: const Row(
             children: [
-              TextField(
-                controller: titleCtrl,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: '会话名称 / 任务目标',
-                  hintText: '例如：重构后端鉴权中间件',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: repoCtrl,
-                decoration: const InputDecoration(
-                  labelText: '关联仓库或项目名',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: branchCtrl,
-                decoration: const InputDecoration(
-                  labelText: '工作分支 (Branch)',
+              Icon(Icons.desktop_windows_rounded, size: 20),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Remote Control · 接管本机电脑',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ),
             ],
           ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '在电脑终端运行 `agy --remote-control`、`/remote-control` 或守护进程 `agy remote-control start`，即可在此粘贴链接或切换受控主机：',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.45,
+                    color: cs.onSurface.withValues(alpha: 0.72),
+                  ),
+                ),
+                if (detected != null) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: cs.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '✓ 已自动识别剪贴板中的受控主机: ${detected.instanceId}',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: AppFontWeights.semibold,
+                        color: cs.primary,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                TextField(
+                  controller: linkCtrl,
+                  autofocus: detected == null,
+                  decoration: const InputDecoration(
+                    labelText: '接管链接或实例 ID (选填)',
+                    hintText:
+                        'https://antigravity.google.com/r/host-swift-falcon?p=c%2F...',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '会话备注名称',
+                    hintText: '例如：家里主力开发机 / 公司工作站',
+                  ),
+                ),
+              ],
+            ),
+          ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('取消'),
-            ),
-            FilledButton(
               onPressed: () {
+                Navigator.pop(ctx);
+                _setWebViewVisible(
+                  true,
+                  targetUrl: RemoteHostPreset.officialRemoteControlUrl,
+                );
+              },
+              child: const Text('打开网页实例切换器'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final rawLink = linkCtrl.text.trim();
+                final parsed =
+                    RemoteSessionInfo.tryParseRemoteControlUrl(rawLink);
+                final instanceId = parsed?.instanceId ??
+                    (rawLink.isEmpty ? 'workstation' : rawLink);
+                final targetUrl = parsed?.normalizedUrl ??
+                    (rawLink.startsWith('http')
+                        ? rawLink
+                        : 'https://antigravity.google.com/r/$instanceId');
                 final title = titleCtrl.text.trim().isEmpty
-                    ? '云端任务 #${_sessions.length + 1}'
+                    ? '远程接管 · $instanceId'
                     : titleCtrl.text.trim();
-                final repo = repoCtrl.text.trim().isEmpty
-                    ? 'antigravity.google.com'
-                    : repoCtrl.text.trim();
-                final branch = branchCtrl.text.trim().isEmpty
-                    ? 'main'
-                    : branchCtrl.text.trim();
 
                 final newSession = RemoteSessionInfo(
-                  id: 's_${DateTime.now().millisecondsSinceEpoch}',
+                  id: 'rc_${DateTime.now().millisecondsSinceEpoch}',
                   title: title,
-                  repo: repo,
-                  branch: branch,
+                  repo: 'Remote Control',
+                  branch: instanceId,
+                  mode: 'remote_control',
+                  instanceId: instanceId,
+                  remoteUrl: targetUrl,
                   status: 'idle',
                   turns: const [],
                 );
+
                 setState(() {
                   _sessions.insert(0, newSession);
                   _activeSessionIndex = 0;
+                  _configuredHostUrl = targetUrl;
                 });
                 _persistSessions();
-                _webCtrl?.evaluateJavascript(
-                  source: 'window.AgyBridge && window.AgyBridge.newSession();',
-                );
                 Navigator.pop(ctx);
+                _setWebViewVisible(true, targetUrl: targetUrl);
               },
-              child: const Text('创建空会话'),
+              icon: const Icon(Icons.link_rounded, size: 16),
+              label: const Text('立即连接接管'),
             ),
           ],
+        );
+      },
+    );
+  }
+
+  void _createNewSessionDialog(BuildContext context) {
+    final titleCtrl = TextEditingController();
+    final repoCtrl = TextEditingController(text: 'antigravity.google.com');
+    final branchCtrl = TextEditingController(text: 'main');
+    String selectedMode = 'remote_agent';
+    final cs = Theme.of(context).colorScheme;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final isRc = selectedMode == 'remote_control';
+            return AlertDialog(
+              backgroundColor: cs.surface,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(22),
+              ),
+              title: const Text(
+                '新建 Antigravity 远程会话',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('Remote Agent (云端)'),
+                            selected: !isRc,
+                            onSelected: (_) => setDialogState(
+                              () => selectedMode = 'remote_agent',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('Remote Control (控电脑)'),
+                            selected: isRc,
+                            onSelected: (_) => setDialogState(
+                              () => selectedMode = 'remote_control',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: titleCtrl,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        labelText: isRc ? '受控电脑备注名称' : '云端项目 / 任务名称',
+                        hintText:
+                            isRc ? '例如：家里台式机 CLI 会话' : '例如：重构后端鉴权中间件',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: repoCtrl,
+                      decoration: InputDecoration(
+                        labelText: isRc
+                            ? '接管链接 (/r/<instance-id>) 或主机名'
+                            : '关联 GitHub 仓库或云端 Project',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: branchCtrl,
+                      decoration: InputDecoration(
+                        labelText: isRc ? '实例标识 (Instance ID)' : '工作分支 (Branch)',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final parsedRc = RemoteSessionInfo.tryParseRemoteControlUrl(
+                      repoCtrl.text.trim(),
+                    );
+                    final title = titleCtrl.text.trim().isEmpty
+                        ? (isRc
+                            ? '远程主机 #${_sessions.length + 1}'
+                            : '云端项目 #${_sessions.length + 1}')
+                        : titleCtrl.text.trim();
+                    final repo = repoCtrl.text.trim().isEmpty
+                        ? 'antigravity.google.com'
+                        : repoCtrl.text.trim();
+                    final branch = parsedRc?.instanceId ??
+                        (branchCtrl.text.trim().isEmpty
+                            ? 'main'
+                            : branchCtrl.text.trim());
+
+                    final newSession = RemoteSessionInfo(
+                      id: 's_${DateTime.now().millisecondsSinceEpoch}',
+                      title: title,
+                      repo: isRc ? 'Remote Control' : repo,
+                      branch: branch,
+                      mode: selectedMode,
+                      instanceId: isRc ? branch : null,
+                      remoteUrl: parsedRc?.normalizedUrl,
+                      status: 'idle',
+                      turns: const [],
+                    );
+                    setState(() {
+                      _sessions.insert(0, newSession);
+                      _activeSessionIndex = 0;
+                    });
+                    _persistSessions();
+                    if (parsedRc != null) {
+                      _setWebViewVisible(
+                        true,
+                        targetUrl: parsedRc.normalizedUrl,
+                      );
+                    } else {
+                      _webCtrl?.evaluateJavascript(
+                        source:
+                            'window.AgyBridge && window.AgyBridge.newSession();',
+                      );
+                    }
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('创建会话'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -1169,9 +1497,16 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                                 ),
                                 itemCount: activeSession.turns.length,
                                 itemBuilder: (context, index) {
+                                  final isLastTurn =
+                                      index == activeSession.turns.length - 1;
                                   return KelivoMessageItem(
                                     turn: activeSession.turns[index],
                                     bubbleStyle: bubbleSpec,
+                                    sessionMode: activeSession.mode,
+                                    pendingApproval: isLastTurn &&
+                                            activeSession.approval.pending
+                                        ? activeSession.approval
+                                        : null,
                                     onRegenerate: () => _regenerateTurn(index),
                                     onApproveTool: _handleApprove,
                                     onDenyTool: _handleDeny,
@@ -1187,6 +1522,8 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                         controller: _promptCtrl,
                         approval: activeSession.approval,
                         currentBranch: activeSession.branch,
+                        sessionMode: activeSession.mode,
+                        remoteInstanceId: activeSession.instanceId,
                         thinkingBudget: _thinkingBudget,
                         webSearchEnabled: _webSearch,
                         fullAccessEnabled: _fullAccess,
@@ -1196,25 +1533,24 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                         onApprove: _handleApprove,
                         onDeny: _handleDeny,
                         onCycleThinking: () {
-                          const levels = ['Low', 'Med', 'High', 'Max'];
-                          final next =
-                              (levels.indexOf(_thinkingBudget) + 1) %
-                                  levels.length;
-                          setState(() => _thinkingBudget = levels[next]);
-                        },
-                        onToggleWebSearch: () {
-                          setState(() => _webSearch = !_webSearch);
+                          final spec = AgyModelCatalog.byName(_selectedModel);
+                          final levels = spec.thinkingLevels;
+                          final curIdx = levels.indexOf(_thinkingBudget);
+                          final nextLevel =
+                              levels[(curIdx + 1) % levels.length];
+                          _syncModelAndThinkingToWeb(_selectedModel, nextLevel);
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
                               content: Text(
-                                _webSearch
-                                    ? '已开启 Remote Agent 联网搜索权限'
-                                    : '已关闭 Remote Agent 联网搜索权限',
+                                '已切换 $_selectedModel 思考深度为 $nextLevel',
                               ),
                               duration: const Duration(seconds: 1),
                               behavior: SnackBarBehavior.floating,
                             ),
                           );
+                        },
+                        onToggleWebSearch: () {
+                          setState(() => _webSearch = !_webSearch);
                         },
                         onToggleFullAccess: () {
                           setState(() => _fullAccess = !_fullAccess);
@@ -1222,8 +1558,8 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                             SnackBar(
                               content: Text(
                                 _fullAccess
-                                    ? '已开启 Full Access 免审批沙盒模式'
-                                    : '已切换回标准安全确认模式',
+                                    ? '权限预设: always-proceed (turbo) · 自动执行命令'
+                                    : '权限预设: request review · 敏感操作需确认',
                               ),
                               duration: const Duration(seconds: 1),
                               behavior: SnackBarBehavior.floating,
@@ -1232,7 +1568,7 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                         },
                         onQuickCommand: (cmd) {
                           setState(() {
-                            _promptCtrl.text = '$cmd ';
+                            _promptCtrl.text = cmd;
                             _promptCtrl.selection = TextSelection.fromPosition(
                               TextPosition(offset: _promptCtrl.text.length),
                             );
@@ -1242,6 +1578,12 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                         onOpenGoogleLogin: _openGoogleLoginFlow,
                         onOpenSettings: () =>
                             _showSettingsAndAccountSheet(context),
+                        onOpenRemoteControlLink: () =>
+                            _openRemoteControlLinkDialog(context),
+                        onOpenProjectResources: _openCloudProjectResources,
+                        onAttachGoogleDrive: _attachGoogleDriveResource,
+                        onUploadLocalFile: _uploadLocalFileResource,
+                        onOpenPlugins: _openMarketplacePlugins,
                       ),
                     ],
                   ),
@@ -1261,35 +1603,32 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
 
     final quickStarters = [
       (
-        Icons.public_rounded,
-        '打开云端网页选择或创建项目',
-        '进入 antigravity.google.com 绑定 GitHub 仓库或恢复会话',
-        () => _setWebViewVisible(true, targetUrl: _configuredHostUrl),
+        Icons.folder_special_outlined,
+        '云端 Project · 挂载 GitHub 仓库与 Drive 文档',
+        '打开 antigravity.google.com 绑定 GitHub Repo、Google Drive 或上传文件',
+        _openCloudProjectResources,
+      ),
+      (
+        Icons.desktop_windows_rounded,
+        'Remote Control · 远程接管本机电脑会话',
+        '粘贴电脑端 agy --remote-control 生成的 /r/<instance> 链接或切换主机',
+        () => _openRemoteControlLinkDialog(context),
       ),
       (
         Icons.architecture_rounded,
-        '生成架构重构与执行计划 (/plan)',
-        '让云端 Agent 先梳理模块依赖并输出分步实现方案',
+        '制定实现计划 Artifact (/plan)',
+        '让云端 Agent 先梳理模块依赖并输出可审阅的 Implementation Plan',
         () {
-          _promptCtrl.text = '/plan 请帮我梳理当前项目的核心模块结构并给出重构建议';
+          _promptCtrl.text = '/plan 请帮我梳理当前项目的核心架构并制定分步实现计划';
           _sendPrompt();
         },
       ),
       (
-        Icons.difference_outlined,
-        '审查代码变更与潜在并发问题 (/diff)',
-        '对当前分支的代码修改进行深度 Code Review',
+        Icons.groups_2_outlined,
+        '多子代理协同 (/teamwork) 与需求对齐 (/grill-me)',
+        '启动多个自治 Subagent 并行开发，或通过交互式提问对齐设计细节',
         () {
-          _promptCtrl.text = '/diff 请审查当前分支的代码改动，排查潜在边界与并发问题';
-          _sendPrompt();
-        },
-      ),
-      (
-        Icons.science_outlined,
-        '编写并运行单元测试套件 (/test)',
-        '在 Google 云端隔离容器中自动补齐测试并验证通过',
-        () {
-          _promptCtrl.text = '/test 请为核心业务逻辑补充单元测试并在云端容器运行验证';
+          _promptCtrl.text = '/teamwork 请组建多子代理团队并行完成核心模块开发与测试验证';
           _sendPrompt();
         },
       ),
@@ -2320,51 +2659,268 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
   }
 
   void _showModelPickerSheet(BuildContext context) {
-    final models = [
-      ('Gemini 4 Argon', 'Google AI Ultra 旗舰深度推理 · 订阅内直连'),
-      ('Gemini 3.1 Pro (Remote)', '云端沙盒长上下文主力模型 · 订阅内直连'),
-      ('Claude Opus 4.6 (Vertex)', 'Antigravity 内置多模型路由 · 订阅内直连'),
-    ];
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Theme.of(context).colorScheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '切换 Remote Agent 云端模型',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 12),
-                for (final m in models)
-                  ListTile(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            final cs = Theme.of(ctx).colorScheme;
+            final colors = ctx.appColors;
+            final currentSpec = AgyModelCatalog.byName(_selectedModel);
+
+            return SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.auto_awesome_rounded,
+                          size: 20,
+                          color: cs.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            '选择推理模型与思考深度 (2026.11 官方规范)',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        IosIconButton(
+                          icon: Icons.close_rounded,
+                          size: 19,
+                          onTap: () => Navigator.pop(ctx),
+                        ),
+                      ],
                     ),
-                    title: Text(m.$1),
-                    subtitle: Text(m.$2, style: const TextStyle(fontSize: 12)),
-                    trailing: _selectedModel == m.$1
-                        ? Icon(
-                            Icons.check_circle_rounded,
-                            color: Theme.of(context).colorScheme.primary,
-                          )
-                        : null,
-                    onTap: () {
-                      setState(() => _selectedModel = m.$1);
-                      Navigator.pop(ctx);
-                    },
-                  ),
-              ],
-            ),
-          ),
+                    const SizedBox(height: 12),
+
+                    // 1. 4 款真实主力模型列表
+                    for (final m in AgyModelCatalog.models)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: IosCardPress(
+                          onTap: () {
+                            final validThinking =
+                                AgyModelCatalog.normalizeThinkingLevel(
+                              m.name,
+                              _thinkingBudget,
+                            );
+                            _syncModelAndThinkingToWeb(m.name, validThinking);
+                            setModalState(() {});
+                          },
+                          baseColor: _selectedModel == m.name
+                              ? cs.primary.withValues(alpha: 0.14)
+                              : colors.chatQuietFill,
+                          borderRadius: BorderRadius.circular(16),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 11,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            m.name,
+                                            style: TextStyle(
+                                              fontSize: 14.2,
+                                              fontWeight:
+                                                  AppFontWeights.semibold,
+                                              color: cs.onSurface,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: cs.primary.withValues(
+                                              alpha: 0.16,
+                                            ),
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            m.badge,
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight:
+                                                  AppFontWeights.semibold,
+                                              color: cs.primary,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      m.subtitle,
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        color: cs.onSurface.withValues(
+                                          alpha: 0.64,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (_selectedModel == m.name)
+                                Icon(
+                                  Icons.check_circle_rounded,
+                                  color: cs.primary,
+                                  size: 20,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                    const SizedBox(height: 10),
+                    Text(
+                      '思考深度 (Thinking Level · ${currentSpec.name})',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: AppFontWeights.semibold,
+                        color: cs.onSurface.withValues(alpha: 0.8),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        for (final lvl in currentSpec.thinkingLevels)
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: ChoiceChip(
+                                label: Text(lvl),
+                                selected: _thinkingBudget == lvl,
+                                onSelected: (_) {
+                                  _syncModelAndThinkingToWeb(
+                                    _selectedModel,
+                                    lvl,
+                                  );
+                                  setModalState(() {});
+                                },
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 14),
+                    // 2. 订阅配额卡片 (Five Hour Limit & Weekly Limit)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: colors.chatQuietFill,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: colors.hairlineBorder,
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.speed_rounded,
+                                size: 16,
+                                color: colors.success,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Google AI Pro / Ultra 订阅配额监控',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: AppFontWeights.semibold,
+                                  color: cs.onSurface,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '• Gemini Models: Five Hour Limit & Weekly Limit 独立核算\n'
+                            '• Claude 5.5 Models: Five Hour Limit & Weekly Limit 独立核算',
+                            style: TextStyle(
+                              fontSize: 11.2,
+                              height: 1.45,
+                              color: cs.onSurface.withValues(alpha: 0.68),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              FilledButton.tonalIcon(
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _promptCtrl.text = '/usage';
+                                  _sendPrompt();
+                                },
+                                icon: const Icon(
+                                  Icons.pie_chart_outline_rounded,
+                                  size: 15,
+                                ),
+                                label: const Text(
+                                  '查看实时配额 (/usage)',
+                                  style: TextStyle(fontSize: 11.5),
+                                ),
+                                style: FilledButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              OutlinedButton.icon(
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _promptCtrl.text = '/credits';
+                                  _sendPrompt();
+                                },
+                                icon: const Icon(
+                                  Icons.bolt_rounded,
+                                  size: 15,
+                                ),
+                                label: const Text(
+                                  '查询 AI Credits',
+                                  style: TextStyle(fontSize: 11.5),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
