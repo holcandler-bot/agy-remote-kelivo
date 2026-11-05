@@ -1,13 +1,20 @@
 /**
  * Antigravity Remote Flutter InAppWebView 桥接脚本 (assets/agy_bridge.js)
  *
- * 1. 自动剥离网页毛玻璃、阴影动画及屏幕外 DOM 重绘开销
- * 2. 提取消息流、CoT 思考过程、工具调用胶囊 (Bash/Edit/Search) 及待确认权限弹窗
- * 3. 通过 flutter_inappwebview 的 callHandler('onAgyStateSync') 实时同步到 Flutter 原生渲染层
+ * 1. 智能检测 Google OAuth 登录状态、当前账号邮箱与 Antigravity 工作区状态
+ * 2. 仅在后台静默模式下剥离高耗能 CSS 动画/模糊，在登录页或前台查看模式下 100% 原样渲染网页
+ * 3. 提取消息流、CoT 思考过程、工具调用胶囊 (Bash/Edit/Search) 及待确认权限弹窗
+ * 4. 同时暴露 window.AgyBridge 与 window.__agyFlutterControl 供 Flutter 原生层双向调用
  */
 (function () {
-  if (window.__agyFlutterBridgeReady) return;
+  if (window.__agyFlutterBridgeReady) {
+    if (window.AgyBridge && window.AgyBridge.syncNow) {
+      window.AgyBridge.syncNow();
+    }
+    return;
+  }
   window.__agyFlutterBridgeReady = true;
+  window.__agyDisableFreeze = window.__agyDisableFreeze || false;
 
   window.__agySelectors = window.__agySelectors || {
     messageContainer: '[data-message-id], [role="article"], .message-row, .chat-turn, main article',
@@ -16,21 +23,37 @@
     toolChip: '[data-tool-call], .tool-call-card, [aria-label*="Tool"], [aria-label*="Command"]',
     inputBox: 'textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"]',
     sendButton: 'button[aria-label*="Send"], button[aria-label*="Submit"], button[type="submit"]',
+    newChatButton: 'button[aria-label*="New"], a[aria-label*="New"], button[title*="New"]',
     approveKeywords: ['allow', 'approve', 'proceed', 'accept', 'run', 'confirm', '允许', '确认', '继续'],
     denyKeywords: ['deny', 'reject', 'cancel', 'block', '拒绝', '取消']
   };
 
+  function isGoogleAuthHost() {
+    const h = (location.hostname || '').toLowerCase();
+    return (
+      h.includes('accounts.google.com') ||
+      h.includes('myaccount.google.com') ||
+      h.includes('ogs.google.com')
+    );
+  }
+
   function applyPerformanceCss(freezeVisuals) {
-    let style = document.getElementById('__agy_flutter_perf');
+    const existing = document.getElementById('__agy_flutter_perf');
+    // 登录页或用户正在前台查看 WebView 时，绝不注入任何冻结/隐藏样式！
+    if (!freezeVisuals || isGoogleAuthHost() || window.__agyDisableFreeze) {
+      if (existing) existing.remove();
+      return;
+    }
+    let style = existing;
     if (!style) {
       style = document.createElement('style');
       style.id = '__agy_flutter_perf';
-      document.head.appendChild(style);
+      (document.head || document.documentElement).appendChild(style);
     }
     style.textContent = `
       * {
-        animation: none !important;
-        transition: none !important;
+        animation-duration: 0.001s !important;
+        transition-duration: 0.001s !important;
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         box-shadow: none !important;
@@ -39,16 +62,65 @@
         content-visibility: auto !important;
         contain-intrinsic-size: 1px 100px !important;
       }
-      ${freezeVisuals ? 'body > *:not(script) { content-visibility: hidden !important; }' : ''}
     `;
   }
 
-  applyPerformanceCss(true);
+  applyPerformanceCss(!window.__agyDisableFreeze);
+
+  function detectUserEmail() {
+    try {
+      const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+      const candidates = document.querySelectorAll(
+        '[aria-label*="@"], [title*="@"], [data-email], a[href*="SignOutOptions"], img[alt*="@"]'
+      );
+      for (const el of candidates) {
+        const raw =
+          (el.getAttribute('data-email') || '') +
+          ' ' +
+          (el.getAttribute('aria-label') || '') +
+          ' ' +
+          (el.getAttribute('title') || '') +
+          ' ' +
+          (el.getAttribute('alt') || '');
+        const m = raw.match(emailRegex);
+        if (m) return m[0];
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function detectNeedsLogin() {
+    if (isGoogleAuthHost()) return true;
+    const s = window.__agySelectors;
+    const hasInput = !!document.querySelector(s.inputBox);
+    if (hasInput) return false;
+
+    const linksAndBtns = Array.from(
+      document.querySelectorAll('a[href*="accounts.google.com"], button, a[role="button"]')
+    );
+    for (const el of linksAndBtns) {
+      const href = (el.getAttribute('href') || '').toLowerCase();
+      const txt = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase().trim();
+      if (
+        href.includes('accounts.google.com/servicelogin') ||
+        href.includes('accounts.google.com/v3/signin') ||
+        txt === 'sign in' ||
+        txt === 'sign in with google' ||
+        txt === '登录' ||
+        txt === '使用 google 账号登录'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   function collectState() {
-    const isLogin = location.hostname.includes('accounts.google.com');
+    const needsLogin = detectNeedsLogin();
+    const userEmail = detectUserEmail();
     const s = window.__agySelectors;
-    const nodes = isLogin ? [] : Array.from(document.querySelectorAll(s.messageContainer));
+    const hasInputBox = !!document.querySelector(s.inputBox);
+    const nodes = needsLogin ? [] : Array.from(document.querySelectorAll(s.messageContainer));
 
     const turns = [];
     nodes.forEach((node, idx) => {
@@ -105,13 +177,13 @@
     // 检测待审批按钮
     let approveBtn = null;
     let denyBtn = null;
-    if (!isLogin) {
+    if (!needsLogin) {
       const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
       for (const b of btns) {
         if (b.disabled || b.offsetParent === null) continue;
         const lbl = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase().trim();
-        if (!approveBtn && s.approveKeywords.some(k => lbl === k || lbl.startsWith(k + ' '))) approveBtn = b;
-        if (!denyBtn && s.denyKeywords.some(k => lbl === k || lbl.startsWith(k + ' '))) denyBtn = b;
+        if (!approveBtn && s.approveKeywords.some((k) => lbl === k || lbl.startsWith(k + ' '))) approveBtn = b;
+        if (!denyBtn && s.denyKeywords.some((k) => lbl === k || lbl.startsWith(k + ' '))) denyBtn = b;
       }
     }
 
@@ -124,7 +196,9 @@
       approval = {
         pending: true,
         commandOrFile: codeEl ? (codeEl.innerText || '').trim() : 'Bash / File Tool Execution',
-        summary: box ? (box.innerText || '').slice(0, 260).replace(/\s+/g, ' ').trim() : '云端 Agent 请求执行权限',
+        summary: box
+          ? (box.innerText || '').slice(0, 260).replace(/\s+/g, ' ').trim()
+          : '云端 Agent 请求执行权限',
         approveLabel: (approveBtn.innerText || '允许执行').trim(),
         denyLabel: (denyBtn.innerText || '拒绝').trim()
       };
@@ -132,8 +206,12 @@
 
     return {
       url: location.href,
+      host: location.hostname,
       title: document.title || 'Remote Agent',
-      needsLogin: isLogin,
+      needsLogin: needsLogin,
+      isAuthenticated: !needsLogin && (!!userEmail || hasInputBox || document.cookie.includes('SID=') || document.cookie.includes('__Secure-1PSID')),
+      hasInputBox: hasInputBox,
+      userEmail: userEmail,
       turns: turns,
       approval: approval
     };
@@ -141,32 +219,32 @@
 
   let scheduled = false;
   let lastJson = '';
-  function syncToFlutter() {
-    if (scheduled) return;
+  function syncToFlutter(force) {
+    if (scheduled && !force) return;
     scheduled = true;
     setTimeout(() => {
       scheduled = false;
       try {
         const state = collectState();
         const jsonStr = JSON.stringify(state);
-        if (jsonStr !== lastJson) {
+        if (force || jsonStr !== lastJson) {
           lastJson = jsonStr;
           if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
             window.flutter_inappwebview.callHandler('onAgyStateSync', state);
           }
         }
       } catch (err) {}
-    }, 80);
+    }, 60);
   }
 
-  const obs = new MutationObserver(syncToFlutter);
+  const obs = new MutationObserver(() => syncToFlutter(false));
   obs.observe(document.documentElement || document.body, {
     childList: true,
     subtree: true,
     characterData: true
   });
 
-  window.__agyFlutterControl = {
+  const bridgeApi = {
     sendPrompt: function (text) {
       const el = document.querySelector(window.__agySelectors.inputBox);
       if (!el) return false;
@@ -184,7 +262,7 @@
         const btn = document.querySelector(window.__agySelectors.sendButton);
         if (btn && !btn.disabled) btn.click();
         else el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-        syncToFlutter();
+        syncToFlutter(true);
       }, 60);
       return true;
     },
@@ -192,15 +270,37 @@
       const btn = allow ? window.__agyApproveBtn : window.__agyDenyBtn;
       if (btn) {
         btn.click();
-        setTimeout(syncToFlutter, 90);
+        setTimeout(() => syncToFlutter(true), 90);
         return true;
       }
       return false;
     },
+    approveTool: function () {
+      return this.resolveApproval(true);
+    },
+    denyTool: function () {
+      return this.resolveApproval(false);
+    },
     setFreeze: function (freeze) {
+      window.__agyDisableFreeze = !freeze;
       applyPerformanceCss(!!freeze);
+    },
+    newSession: function () {
+      const btn = document.querySelector(window.__agySelectors.newChatButton);
+      if (btn) {
+        btn.click();
+        setTimeout(() => syncToFlutter(true), 100);
+        return true;
+      }
+      return false;
+    },
+    syncNow: function () {
+      syncToFlutter(true);
     }
   };
 
-  syncToFlutter();
+  window.__agyFlutterControl = bridgeApi;
+  window.AgyBridge = bridgeApi;
+
+  syncToFlutter(true);
 })();
