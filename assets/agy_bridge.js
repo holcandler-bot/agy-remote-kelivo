@@ -3,7 +3,8 @@
  *
  * 1. 仅在非 Google 登录页的工作区页面运行，绝不干扰 accounts.google.com 登录表单与 CSP/TrustedTypes
  * 2. 支持穿透开放 Shadow DOM (querySelectorAllDeep)，适配 Google Boq/Wiz 组件树
- * 3. 提取真实消息流、CoT 思考过程、工具调用胶囊及待确认权限弹窗
+ * 3. 提取真实消息流、当前激活模型 (Gemini 4 Argon / 3.8 Flash / Claude 5.5)、思考过程、工具调用胶囊、
+ *    Implementation Plan 的单独 Proceed 确认按钮及敏感命令审批弹窗
  * 4. 暴露 window.AgyBridge 与 window.__agyFlutterControl 供 Flutter 原生层双向调用
  */
 (function () {
@@ -33,7 +34,8 @@
     sendButton: 'button[aria-label*="Send"], button[aria-label*="Submit"], button[aria-label*="Run"], button[type="submit"]',
     stopButton: 'button[aria-label*="Stop"], button[aria-label*="Cancel"], button[title*="Stop"]',
     newChatButton: 'button[aria-label*="New"], a[aria-label*="New"], button[title*="New"], button[aria-label*="Create"]',
-    approveKeywords: ['allow', 'approve', 'proceed', 'accept', 'run', 'confirm', '允许', '确认', '继续'],
+    planProceedKeywords: ['proceed', 'proceed with plan', 'execute plan', 'approve plan', '继续执行计划', '批准计划'],
+    approveKeywords: ['allow', 'allow once', 'always allow', 'approve', 'proceed', 'accept', 'run command', 'confirm', '允许', '确认', '继续'],
     denyKeywords: ['deny', 'reject', 'cancel', 'block', '拒绝', '取消']
   };
 
@@ -117,11 +119,49 @@
     return false;
   }
 
+  function detectActiveModelAndThinking() {
+    let detectedModel = '';
+    let detectedThinking = '';
+    try {
+      const candidates = querySelectorAllDeep('button, [role="button"], [role="combobox"], span');
+      for (const el of candidates) {
+        if (el.offsetParent === null) continue;
+        const txt = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
+        if (!txt || txt.length > 80) continue;
+        const lower = txt.toLowerCase();
+        if (!detectedModel) {
+          if (lower.includes('gemini 4 argon') || lower.includes('argon')) {
+            detectedModel = 'Gemini 4 Argon';
+          } else if (lower.includes('gemini 3.8 flash') || lower.includes('3.8 flash')) {
+            detectedModel = 'Gemini 3.8 Flash';
+          } else if (lower.includes('claude opus 5.5') || lower.includes('opus 5.5')) {
+            detectedModel = 'Claude Opus 5.5 (Thinking)';
+          } else if (lower.includes('claude sonnet 5.5') || lower.includes('sonnet 5.5')) {
+            detectedModel = 'Claude Sonnet 5.5 (Thinking)';
+          }
+        }
+        if (!detectedThinking) {
+          if (/\bhigh\b/i.test(txt)) detectedThinking = 'High';
+          else if (/\bmedium\b/i.test(txt)) detectedThinking = 'Medium';
+          else if (/\blow\b/i.test(txt)) detectedThinking = 'Low';
+          else if (/\bfast\b/i.test(txt)) detectedThinking = 'Fast';
+        }
+      }
+    } catch (_) {}
+    return {
+      modelName: detectedModel || window.__agyPreferredModel || 'Gemini 4 Argon',
+      thinkingLevel: detectedThinking || window.__agyPreferredThinking || 'High'
+    };
+  }
+
   function collectState() {
     const needsLogin = detectNeedsLogin();
     const userEmail = detectUserEmail();
     const s = window.__agySelectors;
     const hasInputBox = !!querySelectorDeep(s.inputBox);
+    const stopBtn = querySelectorDeep(s.stopButton);
+    const isGenerating = !!(stopBtn && !stopBtn.disabled && stopBtn.offsetParent !== null);
+    const { modelName, thinkingLevel } = detectActiveModelAndThinking();
     const nodes = needsLogin ? [] : querySelectorAllDeep(s.messageContainer);
 
     const turns = [];
@@ -167,44 +207,88 @@
         body = body.slice(thinking.length).trim();
       }
 
+      const isLastAgentTurn = !isUser && idx === nodes.length - 1;
       turns.push({
         id: node.getAttribute('data-message-id') || `turn_${idx}`,
         role: isUser ? 'user' : 'agent',
-        modelName: 'Gemini 4 Argon',
+        modelName: modelName,
         timestamp: '实时同步',
         thinking: thinking,
-        thinkingDuration: '2.4s',
+        thinkingDuration: isLastAgentTurn && isGenerating ? '思考中' : '2.4s',
+        thinkingActive: isLastAgentTurn && isGenerating,
         content: body,
         toolCalls: toolCalls,
         codeBlocks: codeBlocks
       });
     });
 
+    // 检测 Implementation Plan 的单独 Proceed 按钮，或敏感工具执行的 Approve/Deny 按钮对
+    let planProceedBtn = null;
     let approveBtn = null;
     let denyBtn = null;
     if (!needsLogin) {
       const btns = querySelectorAllDeep('button, [role="button"]');
       for (const b of btns) {
         if (b.disabled || b.offsetParent === null) continue;
-        const lbl = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase().trim();
-        if (!approveBtn && s.approveKeywords.some((k) => lbl === k || lbl.startsWith(k + ' '))) approveBtn = b;
-        if (!denyBtn && s.denyKeywords.some((k) => lbl === k || lbl.startsWith(k + ' '))) denyBtn = b;
+        const inner = (b.innerText || '').replace(/\s+/g, ' ').trim();
+        const aria = (b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+        const candidates = [inner.toLowerCase(), aria.toLowerCase()].filter(Boolean);
+
+        for (const c of candidates) {
+          if (
+            !planProceedBtn &&
+            s.planProceedKeywords.some((k) => c === k || c.endsWith(' ' + k) || c.startsWith(k + ' '))
+          ) {
+            planProceedBtn = b;
+          }
+          if (
+            !approveBtn &&
+            s.approveKeywords.some((k) => c === k || c.endsWith(' ' + k) || c.startsWith(k + ' '))
+          ) {
+            approveBtn = b;
+          }
+          if (
+            !denyBtn &&
+            s.denyKeywords.some((k) => c === k || c.endsWith(' ' + k) || c.startsWith(k + ' '))
+          ) {
+            denyBtn = b;
+          }
+        }
       }
     }
 
     let approval = { pending: false };
-    if (approveBtn && denyBtn) {
+    if (planProceedBtn && !denyBtn) {
+      window.__agyApproveBtn = planProceedBtn;
+      window.__agyDenyBtn = null;
+      const box = planProceedBtn.closest
+        ? planProceedBtn.closest('[role="dialog"], article, section, div')
+        : null;
+      approval = {
+        pending: true,
+        approvalType: 'plan',
+        commandOrFile: 'Implementation Plan 待审阅确认',
+        summary: box
+          ? (box.innerText || '').slice(0, 260).replace(/\s+/g, ' ').trim()
+          : '云端 Agent 已生成实现计划 (Implementation Plan)，点击 Proceed 批准继续执行',
+        approveLabel: (planProceedBtn.innerText || 'Proceed · 批准执行计划').trim(),
+        denyLabel: '修改意见'
+      };
+    } else if (approveBtn && denyBtn) {
       window.__agyApproveBtn = approveBtn;
       window.__agyDenyBtn = denyBtn;
-      const box = approveBtn.closest ? approveBtn.closest('[role="dialog"], article, section, div') : null;
+      const box = approveBtn.closest
+        ? approveBtn.closest('[role="dialog"], article, section, div')
+        : null;
       const codeEl = box && box.querySelector ? box.querySelector('code, pre') : null;
       approval = {
         pending: true,
+        approvalType: 'tool',
         commandOrFile: codeEl ? (codeEl.innerText || '').trim() : 'Bash / File Tool Execution',
         summary: box
           ? (box.innerText || '').slice(0, 260).replace(/\s+/g, ' ').trim()
-          : '云端 Agent 请求执行权限',
-        approveLabel: (approveBtn.innerText || '允许执行').trim(),
+          : '云端 Agent 请求敏感命令或文件操作权限',
+        approveLabel: (approveBtn.innerText || 'Proceed · 允许执行').trim(),
         denyLabel: (denyBtn.innerText || '拒绝').trim()
       };
     }
@@ -216,6 +300,9 @@
       needsLogin: needsLogin,
       isAuthenticated: !needsLogin && (!!userEmail || hasInputBox),
       hasInputBox: hasInputBox,
+      isGenerating: isGenerating,
+      activeModel: modelName,
+      thinkingLevel: thinkingLevel,
       userEmail: userEmail,
       turns: turns,
       approval: approval
@@ -249,6 +336,19 @@
       subtree: true,
       characterData: true
     });
+  }
+
+  function clickButtonByKeywords(keywords) {
+    const btns = querySelectorAllDeep('button, [role="button"], [role="menuitem"], [role="option"]');
+    for (const b of btns) {
+      if (b.disabled || b.offsetParent === null) continue;
+      const txt = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase();
+      if (keywords.some((k) => txt.includes(k.toLowerCase()))) {
+        b.click();
+        return true;
+      }
+    }
+    return false;
   }
 
   const bridgeApi = {
@@ -297,6 +397,46 @@
     },
     denyTool: function () {
       return this.resolveApproval(false);
+    },
+    setModelAndThinking: function (modelName, thinkingLevel) {
+      window.__agyPreferredModel = modelName;
+      window.__agyPreferredThinking = thinkingLevel;
+      try {
+        clickButtonByKeywords(['gemini', 'claude', 'model', 'argon', 'flash']);
+        setTimeout(() => {
+          clickButtonByKeywords([modelName]);
+          if (thinkingLevel) {
+            setTimeout(() => clickButtonByKeywords([thinkingLevel]), 120);
+          }
+          syncToFlutter(true);
+        }, 120);
+      } catch (_) {}
+      syncToFlutter(true);
+      return true;
+    },
+    openProjectSelector: function () {
+      return clickButtonByKeywords(['project', 'repository', 'github', 'create project', 'new remote project']);
+    },
+    triggerAttachment: function (kind) {
+      if (kind === 'upload') {
+        const fileInput = querySelectorDeep('input[type="file"]');
+        if (fileInput) {
+          fileInput.click();
+          return true;
+        }
+      }
+      return clickButtonByKeywords([
+        kind === 'drive' ? 'drive' : kind === 'github' ? 'github' : 'attach',
+        'add resource',
+        'upload'
+      ]);
+    },
+    openPluginManager: function () {
+      const clicked = clickButtonByKeywords(['customizations', 'marketplace', 'plugins', 'plugin']);
+      if (!clicked) {
+        this.sendPrompt('/plugin');
+      }
+      return true;
     },
     setFreeze: function () {},
     newSession: function () {
