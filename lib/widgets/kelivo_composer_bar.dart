@@ -18,6 +18,7 @@ class KelivoComposerBar extends StatefulWidget {
   final double contextUsage; // 0.0 - 1.0
   final bool isStreaming;
   final VoidCallback onSend;
+  final VoidCallback? onStop;
   final VoidCallback onApprove;
   final VoidCallback onDeny;
   final VoidCallback onCycleThinking;
@@ -39,6 +40,7 @@ class KelivoComposerBar extends StatefulWidget {
     this.contextUsage = 0.24,
     this.isStreaming = false,
     required this.onSend,
+    this.onStop,
     required this.onApprove,
     required this.onDeny,
     required this.onCycleThinking,
@@ -579,7 +581,11 @@ class _KelivoComposerBarState extends State<KelivoComposerBar>
         GestureDetector(
           onTap: () {
             HapticFeedback.lightImpact();
-            widget.onSend();
+            if (widget.isStreaming && widget.onStop != null) {
+              widget.onStop!();
+            } else {
+              widget.onSend();
+            }
           },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
