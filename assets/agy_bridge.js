@@ -2,8 +2,8 @@
  * Antigravity Remote Flutter InAppWebView 桥接脚本 (assets/agy_bridge.js)
  *
  * 1. 仅在非 Google 登录页的工作区页面运行，绝不干扰 accounts.google.com 登录表单与 CSP/TrustedTypes
- * 2. 不注入任何破坏网页布局或触发 TrustedTypes 的 style/innerHTML
- * 3. 提取消息流、CoT 思考过程、工具调用胶囊及待确认权限弹窗
+ * 2. 支持穿透开放 Shadow DOM (querySelectorAllDeep)，适配 Google Boq/Wiz 组件树
+ * 3. 提取真实消息流、CoT 思考过程、工具调用胶囊及待确认权限弹窗
  * 4. 暴露 window.AgyBridge 与 window.__agyFlutterControl 供 Flutter 原生层双向调用
  */
 (function () {
@@ -29,17 +29,51 @@
     userIndicator: '[data-role="user"], .user-message, [aria-label*="User"], [aria-label*="You"]',
     thinkingBlock: 'details, [data-thinking], .thinking-block, [aria-label*="Thinking"]',
     toolChip: '[data-tool-call], .tool-call-card, [aria-label*="Tool"], [aria-label*="Command"]',
-    inputBox: 'textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"]',
-    sendButton: 'button[aria-label*="Send"], button[aria-label*="Submit"], button[type="submit"]',
+    inputBox: 'textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"], rich-textarea textarea',
+    sendButton: 'button[aria-label*="Send"], button[aria-label*="Submit"], button[aria-label*="Run"], button[type="submit"]',
+    stopButton: 'button[aria-label*="Stop"], button[aria-label*="Cancel"], button[title*="Stop"]',
     newChatButton: 'button[aria-label*="New"], a[aria-label*="New"], button[title*="New"], button[aria-label*="Create"]',
     approveKeywords: ['allow', 'approve', 'proceed', 'accept', 'run', 'confirm', '允许', '确认', '继续'],
     denyKeywords: ['deny', 'reject', 'cancel', 'block', '拒绝', '取消']
   };
 
+  function querySelectorAllDeep(selector, root) {
+    const startRoot = root || document;
+    const results = [];
+    try {
+      const direct = startRoot.querySelectorAll(selector);
+      for (let i = 0; i < direct.length; i++) {
+        results.push(direct[i]);
+      }
+      const allNodes = startRoot.querySelectorAll('*');
+      for (let i = 0; i < allNodes.length; i++) {
+        const sr = allNodes[i].shadowRoot;
+        if (sr) {
+          const nested = querySelectorAllDeep(selector, sr);
+          for (let j = 0; j < nested.length; j++) {
+            results.push(nested[j]);
+          }
+        }
+      }
+    } catch (_) {}
+    return results;
+  }
+
+  function querySelectorDeep(selector) {
+    const all = querySelectorAllDeep(selector, document);
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (!el.disabled && el.offsetParent !== null) {
+        return el;
+      }
+    }
+    return all[0] || null;
+  }
+
   function detectUserEmail() {
     try {
       const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
-      const candidates = document.querySelectorAll(
+      const candidates = querySelectorAllDeep(
         '[aria-label*="@"], [title*="@"], [data-email], a[href*="SignOutOptions"], img[alt*="@"]'
       );
       for (const el of candidates) {
@@ -60,11 +94,11 @@
 
   function detectNeedsLogin() {
     const s = window.__agySelectors;
-    const hasInput = !!document.querySelector(s.inputBox);
+    const hasInput = !!querySelectorDeep(s.inputBox);
     if (hasInput) return false;
 
-    const linksAndBtns = Array.from(
-      document.querySelectorAll('a[href*="accounts.google.com"], button, a[role="button"]')
+    const linksAndBtns = querySelectorAllDeep(
+      'a[href*="accounts.google.com"], button, a[role="button"]'
     );
     for (const el of linksAndBtns) {
       const href = (el.getAttribute('href') || '').toLowerCase();
@@ -87,8 +121,8 @@
     const needsLogin = detectNeedsLogin();
     const userEmail = detectUserEmail();
     const s = window.__agySelectors;
-    const hasInputBox = !!document.querySelector(s.inputBox);
-    const nodes = needsLogin ? [] : Array.from(document.querySelectorAll(s.messageContainer));
+    const hasInputBox = !!querySelectorDeep(s.inputBox);
+    const nodes = needsLogin ? [] : querySelectorAllDeep(s.messageContainer);
 
     const turns = [];
     nodes.forEach((node, idx) => {
@@ -96,33 +130,37 @@
       if (!text) return;
 
       const isUser =
-        node.matches(s.userIndicator) ||
-        !!node.querySelector(s.userIndicator) ||
+        (node.matches && node.matches(s.userIndicator)) ||
+        !!(node.querySelector && node.querySelector(s.userIndicator)) ||
         (node.getAttribute('data-author') || '').toLowerCase() === 'user';
 
       let thinking = '';
-      const thinkEl = node.querySelector(s.thinkingBlock);
+      const thinkEl = node.querySelector ? node.querySelector(s.thinkingBlock) : null;
       if (thinkEl) thinking = (thinkEl.innerText || '').trim();
 
       const codeBlocks = [];
-      node.querySelectorAll('pre code, pre').forEach((pre) => {
-        const c = (pre.innerText || '').trim();
-        if (c && !codeBlocks.includes(c)) codeBlocks.push(c);
-      });
+      if (node.querySelectorAll) {
+        node.querySelectorAll('pre code, pre').forEach((pre) => {
+          const c = (pre.innerText || '').trim();
+          if (c && !codeBlocks.includes(c)) codeBlocks.push(c);
+        });
+      }
 
       const toolCalls = [];
-      node.querySelectorAll(s.toolChip).forEach((chip, tIdx) => {
-        const label = (chip.innerText || '').trim();
-        if (label) {
-          toolCalls.push({
-            id: `tc_${idx}_${tIdx}`,
-            type: label.toLowerCase().includes('edit') ? 'edit' : 'bash',
-            title: label.split('\n')[0].slice(0, 60),
-            detail: label,
-            status: 'done'
-          });
-        }
-      });
+      if (node.querySelectorAll) {
+        node.querySelectorAll(s.toolChip).forEach((chip, tIdx) => {
+          const label = (chip.innerText || '').trim();
+          if (label) {
+            toolCalls.push({
+              id: `tc_${idx}_${tIdx}`,
+              type: label.toLowerCase().includes('edit') ? 'edit' : 'bash',
+              title: label.split('\n')[0].slice(0, 60),
+              detail: label,
+              status: 'done'
+            });
+          }
+        });
+      }
 
       let body = text;
       if (thinking && body.startsWith(thinking)) {
@@ -145,7 +183,7 @@
     let approveBtn = null;
     let denyBtn = null;
     if (!needsLogin) {
-      const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+      const btns = querySelectorAllDeep('button, [role="button"]');
       for (const b of btns) {
         if (b.disabled || b.offsetParent === null) continue;
         const lbl = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase().trim();
@@ -158,8 +196,8 @@
     if (approveBtn && denyBtn) {
       window.__agyApproveBtn = approveBtn;
       window.__agyDenyBtn = denyBtn;
-      const box = approveBtn.closest('[role="dialog"], article, section, div');
-      const codeEl = box ? box.querySelector('code, pre') : null;
+      const box = approveBtn.closest ? approveBtn.closest('[role="dialog"], article, section, div') : null;
+      const codeEl = box && box.querySelector ? box.querySelector('code, pre') : null;
       approval = {
         pending: true,
         commandOrFile: codeEl ? (codeEl.innerText || '').trim() : 'Bash / File Tool Execution',
@@ -215,25 +253,35 @@
 
   const bridgeApi = {
     sendPrompt: function (text) {
-      const el = document.querySelector(window.__agySelectors.inputBox);
+      const el = querySelectorDeep(window.__agySelectors.inputBox);
       if (!el) return false;
       el.focus();
-      if (el.tagName.toLowerCase() === 'textarea' || el.tagName.toLowerCase() === 'input') {
+      if (el.tagName && (el.tagName.toLowerCase() === 'textarea' || el.tagName.toLowerCase() === 'input')) {
         const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
         if (setter) setter.call(el, text);
         else el.value = text;
         el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
       } else {
         el.textContent = text;
         el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
       }
       setTimeout(() => {
-        const btn = document.querySelector(window.__agySelectors.sendButton);
+        const btn = querySelectorDeep(window.__agySelectors.sendButton);
         if (btn && !btn.disabled) btn.click();
-        else el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        else el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
         syncToFlutter(true);
-      }, 60);
+      }, 80);
       return true;
+    },
+    stopGeneration: function () {
+      const btn = querySelectorDeep(window.__agySelectors.stopButton);
+      if (btn) {
+        btn.click();
+        setTimeout(() => syncToFlutter(true), 80);
+        return true;
+      }
+      return false;
     },
     resolveApproval: function (allow) {
       const btn = allow ? window.__agyApproveBtn : window.__agyDenyBtn;
@@ -252,7 +300,7 @@
     },
     setFreeze: function () {},
     newSession: function () {
-      const btn = document.querySelector(window.__agySelectors.newChatButton);
+      const btn = querySelectorDeep(window.__agySelectors.newChatButton);
       if (btn) {
         btn.click();
         setTimeout(() => syncToFlutter(true), 100);
