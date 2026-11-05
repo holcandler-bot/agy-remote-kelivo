@@ -45,6 +45,22 @@ class ToolCallItem {
     );
   }
 
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'type': type,
+      'title': title,
+      'detail': detail,
+      'filePath': filePath,
+      'addedLines': addedLines,
+      'removedLines': removedLines,
+      'statusText': statusText,
+      'shellTail': shellTail,
+      'diffPreview': diffPreview,
+      'status': status,
+    };
+  }
+
   factory ToolCallItem.fromJson(Map<String, dynamic> json) {
     final rawTail = (json['shellTail'] as List?) ?? const [];
     return ToolCallItem(
@@ -103,6 +119,7 @@ class AgentChatTurn {
     List<ToolCallItem>? toolCalls,
     int? branchIndex,
     int? branchTotal,
+    String? tokenStats,
   }) {
     return AgentChatTurn(
       id: id,
@@ -116,10 +133,29 @@ class AgentChatTurn {
       translatedContent: translatedContent ?? this.translatedContent,
       toolCalls: toolCalls ?? this.toolCalls,
       codeBlocks: codeBlocks,
-      tokenStats: tokenStats,
+      tokenStats: tokenStats ?? this.tokenStats,
       branchIndex: branchIndex ?? this.branchIndex,
       branchTotal: branchTotal ?? this.branchTotal,
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'role': isUser ? 'user' : 'agent',
+      'modelName': modelName,
+      'timestamp': timestamp,
+      'thinking': thinking,
+      'thinkingDuration': thinkingDuration,
+      'thinkingActive': thinkingActive,
+      'content': content,
+      'translatedContent': translatedContent,
+      'toolCalls': toolCalls.map((t) => t.toJson()).toList(),
+      'codeBlocks': codeBlocks,
+      'tokenStats': tokenStats,
+      'branchIndex': branchIndex,
+      'branchTotal': branchTotal,
+    };
   }
 
   factory AgentChatTurn.fromJson(Map<String, dynamic> json) {
@@ -127,19 +163,22 @@ class AgentChatTurn {
     final rawCodes = (json['codeBlocks'] as List?) ?? const [];
     return AgentChatTurn(
       id: (json['id'] ?? '').toString(),
-      isUser: json['role'] == 'user',
+      isUser: json['role'] == 'user' || json['isUser'] == true,
       modelName: (json['modelName'] ?? 'Gemini 4 Argon').toString(),
       timestamp: (json['timestamp'] ?? '刚刚').toString(),
       thinking: (json['thinking'] ?? '').toString(),
       thinkingDuration: (json['thinkingDuration'] ?? '2.8s').toString(),
       thinkingActive: json['thinkingActive'] == true,
       content: (json['content'] ?? '').toString(),
+      translatedContent: json['translatedContent']?.toString(),
       toolCalls: rawTools
-          .whereType<Map<String, dynamic>>()
-          .map(ToolCallItem.fromJson)
+          .whereType<Map>()
+          .map((e) => ToolCallItem.fromJson(Map<String, dynamic>.from(e)))
           .toList(),
       codeBlocks: rawCodes.map((e) => e.toString()).toList(),
       tokenStats: (json['tokenStats'] ?? '1,420 tok · 52.4 t/s').toString(),
+      branchIndex: int.tryParse((json['branchIndex'] ?? 1).toString()) ?? 1,
+      branchTotal: int.tryParse((json['branchTotal'] ?? 1).toString()) ?? 1,
     );
   }
 }
@@ -158,6 +197,16 @@ class PendingApprovalRequest {
     this.approveLabel = '允许执行',
     this.denyLabel = '拒绝',
   });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'pending': pending,
+      'commandOrFile': commandOrFile,
+      'summary': summary,
+      'approveLabel': approveLabel,
+      'denyLabel': denyLabel,
+    };
+  }
 
   factory PendingApprovalRequest.fromJson(Map<String, dynamic>? json) {
     if (json == null || json['pending'] != true) {
@@ -216,6 +265,43 @@ class RemoteSessionInfo {
       deletions: deletions ?? this.deletions,
       turns: turns ?? this.turns,
       approval: approval ?? this.approval,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'repo': repo,
+      'branch': branch,
+      'status': status,
+      'additions': additions,
+      'deletions': deletions,
+      'turns': turns.map((t) => t.toJson()).toList(),
+      'approval': approval.toJson(),
+    };
+  }
+
+  factory RemoteSessionInfo.fromJson(Map<String, dynamic> json) {
+    final rawTurns = (json['turns'] as List?) ?? const [];
+    final rawApproval = json['approval'];
+    return RemoteSessionInfo(
+      id: (json['id'] ?? 's_default').toString(),
+      title: (json['title'] ?? '默认云端工作区').toString(),
+      repo: (json['repo'] ?? 'antigravity.google.com').toString(),
+      branch: (json['branch'] ?? 'main').toString(),
+      status: (json['status'] ?? 'idle').toString(),
+      additions: int.tryParse((json['additions'] ?? 0).toString()) ?? 0,
+      deletions: int.tryParse((json['deletions'] ?? 0).toString()) ?? 0,
+      turns: rawTurns
+          .whereType<Map>()
+          .map((e) => AgentChatTurn.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+      approval: rawApproval is Map
+          ? PendingApprovalRequest.fromJson(
+              Map<String, dynamic>.from(rawApproval),
+            )
+          : const PendingApprovalRequest(pending: false),
     );
   }
 }
