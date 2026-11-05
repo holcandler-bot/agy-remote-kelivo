@@ -25,6 +25,26 @@ class ToolCallItem {
     this.status = 'done',
   });
 
+  ToolCallItem copyWith({
+    String? status,
+    String? statusText,
+    List<String>? shellTail,
+  }) {
+    return ToolCallItem(
+      id: id,
+      type: type,
+      title: title,
+      detail: detail,
+      filePath: filePath,
+      addedLines: addedLines,
+      removedLines: removedLines,
+      statusText: statusText ?? this.statusText,
+      shellTail: shellTail ?? this.shellTail,
+      diffPreview: diffPreview,
+      status: status ?? this.status,
+    );
+  }
+
   factory ToolCallItem.fromJson(Map<String, dynamic> json) {
     final rawTail = (json['shellTail'] as List?) ?? const [];
     return ToolCallItem(
@@ -52,6 +72,7 @@ class AgentChatTurn {
   final String thinkingDuration;
   final bool thinkingActive;
   final String content;
+  final String? translatedContent;
   final List<ToolCallItem> toolCalls;
   final List<String> codeBlocks;
   final String tokenStats;
@@ -67,12 +88,39 @@ class AgentChatTurn {
     this.thinkingDuration = '2.8s',
     this.thinkingActive = false,
     required this.content,
+    this.translatedContent,
     this.toolCalls = const [],
     this.codeBlocks = const [],
     this.tokenStats = '1,420 tok · 52.4 t/s',
-    this.branchIndex = 2,
-    this.branchTotal = 2,
+    this.branchIndex = 1,
+    this.branchTotal = 1,
   });
+
+  AgentChatTurn copyWith({
+    String? content,
+    String? translatedContent,
+    bool? thinkingActive,
+    List<ToolCallItem>? toolCalls,
+    int? branchIndex,
+    int? branchTotal,
+  }) {
+    return AgentChatTurn(
+      id: id,
+      isUser: isUser,
+      modelName: modelName,
+      timestamp: timestamp,
+      thinking: thinking,
+      thinkingDuration: thinkingDuration,
+      thinkingActive: thinkingActive ?? this.thinkingActive,
+      content: content ?? this.content,
+      translatedContent: translatedContent ?? this.translatedContent,
+      toolCalls: toolCalls ?? this.toolCalls,
+      codeBlocks: codeBlocks,
+      tokenStats: tokenStats,
+      branchIndex: branchIndex ?? this.branchIndex,
+      branchTotal: branchTotal ?? this.branchTotal,
+    );
+  }
 
   factory AgentChatTurn.fromJson(Map<String, dynamic> json) {
     final rawTools = (json['toolCalls'] as List?) ?? const [];
@@ -133,6 +181,8 @@ class RemoteSessionInfo {
   final String status; // 'running' | 'approval' | 'idle'
   final int additions;
   final int deletions;
+  final List<AgentChatTurn> turns;
+  final PendingApprovalRequest approval;
 
   const RemoteSessionInfo({
     required this.id,
@@ -142,5 +192,71 @@ class RemoteSessionInfo {
     required this.status,
     this.additions = 0,
     this.deletions = 0,
+    this.turns = const [],
+    this.approval = const PendingApprovalRequest(pending: false),
   });
+
+  RemoteSessionInfo copyWith({
+    String? title,
+    String? repo,
+    String? branch,
+    String? status,
+    int? additions,
+    int? deletions,
+    List<AgentChatTurn>? turns,
+    PendingApprovalRequest? approval,
+  }) {
+    return RemoteSessionInfo(
+      id: id,
+      title: title ?? this.title,
+      repo: repo ?? this.repo,
+      branch: branch ?? this.branch,
+      status: status ?? this.status,
+      additions: additions ?? this.additions,
+      deletions: deletions ?? this.deletions,
+      turns: turns ?? this.turns,
+      approval: approval ?? this.approval,
+    );
+  }
+}
+
+class RemoteHostPreset {
+  final String id;
+  final String name;
+  final String subtitle;
+  final String url;
+
+  const RemoteHostPreset({
+    required this.id,
+    required this.name,
+    required this.subtitle,
+    required this.url,
+  });
+
+  static const List<RemoteHostPreset> all = [
+    RemoteHostPreset(
+      id: 'agy_remote',
+      name: 'Antigravity Remote Agents',
+      subtitle: 'antigravity.google · 官方远端 Agent 控制台',
+      url: 'https://antigravity.google/remote-agents',
+    ),
+    RemoteHostPreset(
+      id: 'google_login',
+      name: 'Google 账号统一登录中心',
+      subtitle: 'accounts.google.com · 优先登录个人 Pro/Ultra 账号',
+      url: 'https://accounts.google.com/ServiceLogin?continue=https://antigravity.google/remote-agents',
+    ),
+    RemoteHostPreset(
+      id: 'project_idx',
+      name: 'Google Project IDX 云端工作区',
+      subtitle: 'idx.google.com · 云端全栈容器与 Agent 环境',
+      url: 'https://idx.google.com',
+    ),
+    RemoteHostPreset(
+      id: 'agy_docs',
+      name: 'Antigravity Remote Agents 文档与入口',
+      subtitle: 'antigravity.google/docs/remote-agents',
+      url: 'https://antigravity.google/docs/remote-agents',
+    ),
+  ];
 }
