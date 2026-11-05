@@ -233,28 +233,32 @@ class RemoteHostPreset {
     required this.url,
   });
 
+  static const String officialWebUrl = 'https://antigravity.google.com/';
+  static const String officialLoginUrl =
+      'https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://antigravity.google.com/&followup=https://antigravity.google.com/&ec=GAZAgQY';
+
   static const List<RemoteHostPreset> all = [
     RemoteHostPreset(
       id: 'agy_remote',
-      name: 'Antigravity Remote Agents',
-      subtitle: 'antigravity.google · 官方远端 Agent 控制台',
-      url: 'https://antigravity.google/remote-agents',
+      name: 'Antigravity Remote Agents 控制台',
+      subtitle: 'antigravity.google.com · 官方云端 Agent 网页端 (推荐)',
+      url: officialWebUrl,
     ),
     RemoteHostPreset(
       id: 'google_login',
-      name: 'Google 账号统一登录中心',
-      subtitle: 'accounts.google.com · 优先登录个人 Pro/Ultra 账号',
-      url: 'https://accounts.google.com/ServiceLogin?continue=https://antigravity.google/remote-agents',
+      name: 'Google 账号官方登录入口',
+      subtitle: 'accounts.google.com · 登录后自动跳转 antigravity.google.com',
+      url: officialLoginUrl,
     ),
     RemoteHostPreset(
       id: 'project_idx',
       name: 'Google Project IDX 云端工作区',
       subtitle: 'idx.google.com · 云端全栈容器与 Agent 环境',
-      url: 'https://idx.google.com',
+      url: 'https://idx.google.com/',
     ),
     RemoteHostPreset(
       id: 'agy_docs',
-      name: 'Antigravity Remote Agents 文档与入口',
+      name: 'Antigravity Remote Agents 官方文档',
       subtitle: 'antigravity.google/docs/remote-agents',
       url: 'https://antigravity.google/docs/remote-agents',
     ),
