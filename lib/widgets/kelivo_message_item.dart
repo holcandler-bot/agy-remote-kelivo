@@ -17,6 +17,8 @@ const double _kTimelineLineX = 11.5;
 class KelivoMessageItem extends StatefulWidget {
   final AgentChatTurn turn;
   final ChatBubbleStyleSpec bubbleStyle;
+  final String sessionMode;
+  final PendingApprovalRequest? pendingApproval;
   final VoidCallback? onCopy;
   final VoidCallback? onRegenerate;
   final VoidCallback? onApproveTool;
@@ -27,6 +29,8 @@ class KelivoMessageItem extends StatefulWidget {
     super.key,
     required this.turn,
     this.bubbleStyle = const ChatBubbleStyleSpec(),
+    this.sessionMode = 'remote_agent',
+    this.pendingApproval,
     this.onCopy,
     this.onRegenerate,
     this.onApproveTool,
@@ -162,7 +166,7 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
         return line.split(':').last.trim();
       }
     }
-    return 'src/auth/token_manager.ts';
+    return 'workspace/patch.diff';
   }
 
   @override
@@ -287,7 +291,9 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
-                            'Remote Sandbox',
+                            widget.sessionMode == 'remote_control'
+                                ? 'Remote Control'
+                                : 'Remote Agent',
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: AppFontWeights.medium,
@@ -384,6 +390,100 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
             ),
           ],
 
+          // 5.5 Implementation Plan / 敏感权限内联 Proceed 确认卡片
+          if (widget.pendingApproval != null &&
+              widget.pendingApproval!.pending) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: widget.pendingApproval!.isPlanReview
+                    ? cs.primary.withValues(alpha: 0.10)
+                    : colors.warning.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: widget.pendingApproval!.isPlanReview
+                      ? cs.primary.withValues(alpha: 0.32)
+                      : colors.warning.withValues(alpha: 0.35),
+                  width: 0.9,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        widget.pendingApproval!.isPlanReview
+                            ? Icons.assignment_turned_in_rounded
+                            : Icons.security_rounded,
+                        size: 16,
+                        color: widget.pendingApproval!.isPlanReview
+                            ? cs.primary
+                            : colors.warning,
+                      ),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          widget.pendingApproval!.isPlanReview
+                              ? 'Implementation Plan 已就绪 · 等待 Proceed 确认'
+                              : '待确认操作: ${widget.pendingApproval!.commandOrFile}',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: AppFontWeights.semibold,
+                            color: cs.onSurface,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (widget.pendingApproval!.summary.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      widget.pendingApproval!.summary,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.8,
+                        height: 1.42,
+                        color: cs.onSurface.withValues(alpha: 0.76),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      FilledButton.icon(
+                        onPressed: widget.onApproveTool,
+                        icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                        label: Text(
+                          widget.pendingApproval!.approveLabel.isNotEmpty
+                              ? widget.pendingApproval!.approveLabel
+                              : 'Proceed · 批准执行',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: widget.onDenyTool,
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: Text(
+                          widget.pendingApproval!.denyLabel,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // 6. Kelivo Bottom Message Action Bar + Branch Selector + TokenDisplayWidget
           const SizedBox(height: 8),
           Row(
@@ -437,63 +537,67 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
                   );
                 },
               ),
-              const SizedBox(width: 4),
-              // Interactive `_BranchSelector` (`< 2/2 >`)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                decoration: BoxDecoration(
-                  color: colors.chatQuietFill,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    GestureDetector(
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          final total = math.max(2, widget.turn.branchTotal);
-                          _branchIdx = _branchIdx > 1 ? _branchIdx - 1 : total;
-                        });
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
-                        child: Icon(
-                          Icons.chevron_left_rounded,
-                          size: 15,
-                          color: cs.onSurface.withValues(alpha: 0.65),
+              if (widget.turn.branchTotal > 1) ...[
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.chatQuietFill,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      GestureDetector(
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            final total = widget.turn.branchTotal;
+                            _branchIdx = _branchIdx > 1 ? _branchIdx - 1 : total;
+                          });
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: Icon(
+                            Icons.chevron_left_rounded,
+                            size: 15,
+                            color: cs.onSurface.withValues(alpha: 0.65),
+                          ),
                         ),
                       ),
-                    ),
-                    Text(
-                      '$_branchIdx/${math.max(2, widget.turn.branchTotal)}',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                        fontWeight: AppFontWeights.medium,
-                        color: cs.onSurface.withValues(alpha: 0.68),
-                      ),
-                    ),
-                    GestureDetector(
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          final total = math.max(2, widget.turn.branchTotal);
-                          _branchIdx = _branchIdx < total ? _branchIdx + 1 : 1;
-                        });
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
-                        child: Icon(
-                          Icons.chevron_right_rounded,
-                          size: 15,
-                          color: cs.onSurface.withValues(alpha: 0.65),
+                      Text(
+                        '$_branchIdx/${widget.turn.branchTotal}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                          fontWeight: AppFontWeights.medium,
+                          color: cs.onSurface.withValues(alpha: 0.68),
                         ),
                       ),
-                    ),
-                  ],
+                      GestureDetector(
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            final total = widget.turn.branchTotal;
+                            _branchIdx = _branchIdx < total ? _branchIdx + 1 : 1;
+                          });
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: Icon(
+                            Icons.chevron_right_rounded,
+                            size: 15,
+                            color: cs.onSurface.withValues(alpha: 0.65),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+              ],
               const Spacer(),
               // `TokenDisplayWidget`
               Text(
@@ -1026,9 +1130,9 @@ class _WorkspaceFileChip extends StatelessWidget {
                     border: Border.all(color: colors.hairlineBorder, width: 0.6),
                   ),
                   child: Text(
-                    'Sandbox Path: /workspace/agy-cloud-core/$filePath\n'
+                    'Remote Project Path: /workspace/$filePath\n'
                     'AST Hunks: +$added lines added, −$removed lines removed\n'
-                    'Execution Latency: 180ms (Remote Container Verified)',
+                    'Status: Synced with Google Antigravity Remote Environment',
                     style: TextStyle(
                       fontSize: 12,
                       height: 1.5,
