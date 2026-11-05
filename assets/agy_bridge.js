@@ -1,12 +1,21 @@
 /**
  * Antigravity Remote Flutter InAppWebView 桥接脚本 (assets/agy_bridge.js)
  *
- * 1. 智能检测 Google OAuth 登录状态、当前账号邮箱与 Antigravity 工作区状态
- * 2. 仅在后台静默模式下剥离高耗能 CSS 动画/模糊，在登录页或前台查看模式下 100% 原样渲染网页
- * 3. 提取消息流、CoT 思考过程、工具调用胶囊 (Bash/Edit/Search) 及待确认权限弹窗
- * 4. 同时暴露 window.AgyBridge 与 window.__agyFlutterControl 供 Flutter 原生层双向调用
+ * 1. 仅在非 Google 登录页的工作区页面运行，绝不干扰 accounts.google.com 登录表单与 CSP/TrustedTypes
+ * 2. 不注入任何破坏网页布局或触发 TrustedTypes 的 style/innerHTML
+ * 3. 提取消息流、CoT 思考过程、工具调用胶囊及待确认权限弹窗
+ * 4. 暴露 window.AgyBridge 与 window.__agyFlutterControl 供 Flutter 原生层双向调用
  */
 (function () {
+  const host = (location.hostname || '').toLowerCase();
+  if (
+    host.includes('accounts.google.com') ||
+    host.includes('myaccount.google.com') ||
+    host.includes('ogs.google.com')
+  ) {
+    return;
+  }
+
   if (window.__agyFlutterBridgeReady) {
     if (window.AgyBridge && window.AgyBridge.syncNow) {
       window.AgyBridge.syncNow();
@@ -14,7 +23,6 @@
     return;
   }
   window.__agyFlutterBridgeReady = true;
-  window.__agyDisableFreeze = window.__agyDisableFreeze || false;
 
   window.__agySelectors = window.__agySelectors || {
     messageContainer: '[data-message-id], [role="article"], .message-row, .chat-turn, main article',
@@ -23,49 +31,10 @@
     toolChip: '[data-tool-call], .tool-call-card, [aria-label*="Tool"], [aria-label*="Command"]',
     inputBox: 'textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"]',
     sendButton: 'button[aria-label*="Send"], button[aria-label*="Submit"], button[type="submit"]',
-    newChatButton: 'button[aria-label*="New"], a[aria-label*="New"], button[title*="New"]',
+    newChatButton: 'button[aria-label*="New"], a[aria-label*="New"], button[title*="New"], button[aria-label*="Create"]',
     approveKeywords: ['allow', 'approve', 'proceed', 'accept', 'run', 'confirm', '允许', '确认', '继续'],
     denyKeywords: ['deny', 'reject', 'cancel', 'block', '拒绝', '取消']
   };
-
-  function isGoogleAuthHost() {
-    const h = (location.hostname || '').toLowerCase();
-    return (
-      h.includes('accounts.google.com') ||
-      h.includes('myaccount.google.com') ||
-      h.includes('ogs.google.com')
-    );
-  }
-
-  function applyPerformanceCss(freezeVisuals) {
-    const existing = document.getElementById('__agy_flutter_perf');
-    // 登录页或用户正在前台查看 WebView 时，绝不注入任何冻结/隐藏样式！
-    if (!freezeVisuals || isGoogleAuthHost() || window.__agyDisableFreeze) {
-      if (existing) existing.remove();
-      return;
-    }
-    let style = existing;
-    if (!style) {
-      style = document.createElement('style');
-      style.id = '__agy_flutter_perf';
-      (document.head || document.documentElement).appendChild(style);
-    }
-    style.textContent = `
-      * {
-        animation-duration: 0.001s !important;
-        transition-duration: 0.001s !important;
-        backdrop-filter: none !important;
-        -webkit-backdrop-filter: none !important;
-        box-shadow: none !important;
-      }
-      article, [data-message-id], pre, code {
-        content-visibility: auto !important;
-        contain-intrinsic-size: 1px 100px !important;
-      }
-    `;
-  }
-
-  applyPerformanceCss(!window.__agyDisableFreeze);
 
   function detectUserEmail() {
     try {
@@ -90,7 +59,6 @@
   }
 
   function detectNeedsLogin() {
-    if (isGoogleAuthHost()) return true;
     const s = window.__agySelectors;
     const hasInput = !!document.querySelector(s.inputBox);
     if (hasInput) return false;
@@ -174,7 +142,6 @@
       });
     });
 
-    // 检测待审批按钮
     let approveBtn = null;
     let denyBtn = null;
     if (!needsLogin) {
@@ -209,7 +176,7 @@
       host: location.hostname,
       title: document.title || 'Remote Agent',
       needsLogin: needsLogin,
-      isAuthenticated: !needsLogin && (!!userEmail || hasInputBox || document.cookie.includes('SID=') || document.cookie.includes('__Secure-1PSID')),
+      isAuthenticated: !needsLogin && (!!userEmail || hasInputBox),
       hasInputBox: hasInputBox,
       userEmail: userEmail,
       turns: turns,
@@ -234,15 +201,17 @@
           }
         }
       } catch (err) {}
-    }, 60);
+    }, 80);
   }
 
   const obs = new MutationObserver(() => syncToFlutter(false));
-  obs.observe(document.documentElement || document.body, {
-    childList: true,
-    subtree: true,
-    characterData: true
-  });
+  if (document.documentElement || document.body) {
+    obs.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
 
   const bridgeApi = {
     sendPrompt: function (text) {
@@ -255,7 +224,7 @@
         else el.value = text;
         el.dispatchEvent(new Event('input', { bubbles: true }));
       } else {
-        el.innerText = text;
+        el.textContent = text;
         el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
       }
       setTimeout(() => {
@@ -281,10 +250,7 @@
     denyTool: function () {
       return this.resolveApproval(false);
     },
-    setFreeze: function (freeze) {
-      window.__agyDisableFreeze = !freeze;
-      applyPerformanceCss(!!freeze);
-    },
+    setFreeze: function () {},
     newSession: function () {
       const btn = document.querySelector(window.__agySelectors.newChatButton);
       if (btn) {
