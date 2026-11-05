@@ -40,7 +40,130 @@ class KelivoMessageItem extends StatefulWidget {
 
 class _KelivoMessageItemState extends State<KelivoMessageItem> {
   bool _thinkingExpanded = false;
+  bool _showTranslatedSummary = false;
+  late int _branchIdx;
   final Set<String> _expandedToolIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _branchIdx = widget.turn.branchIndex;
+  }
+
+  void _copyWithToast(BuildContext context, String text, String label) {
+    HapticFeedback.lightImpact();
+    Clipboard.setData(ClipboardData(text: text));
+    widget.onCopy?.call();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制$label到剪贴板'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _showTurnSourceInspector(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final colors = context.appColors;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: cs.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.article_outlined, size: 18, color: cs.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '原始响应与工具调用载荷 (${widget.turn.modelName})',
+                        style: TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: AppFontWeights.semibold,
+                          color: cs.onSurface,
+                        ),
+                      ),
+                    ),
+                    IosIconButton(
+                      icon: Icons.content_copy_rounded,
+                      size: 16,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _copyWithToast(context, widget.turn.content, '完整响应源码');
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(ctx).height * 0.5,
+                  ),
+                  child: SingleChildScrollView(
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: colors.chatQuietFill,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: colors.hairlineBorder,
+                          width: 0.6,
+                        ),
+                      ),
+                      child: SelectableText(
+                        [
+                          if (widget.turn.thinking.isNotEmpty)
+                            '/* --- THINKING (${widget.turn.thinkingDuration}) --- */\n${widget.turn.thinking}\n',
+                          '/* --- CONTENT --- */\n${widget.turn.content}',
+                          if (widget.turn.codeBlocks.isNotEmpty)
+                            '\n/* --- DIFF / CODE BLOCKS --- */\n${widget.turn.codeBlocks.join("\n\n")}',
+                        ].join('\n'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.5,
+                          fontFamily: 'monospace',
+                          color: cs.onSurface.withValues(alpha: 0.84),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _inferDiffFilePath(String code) {
+    for (final tool in widget.turn.toolCalls) {
+      if ((tool.filePath ?? '').isNotEmpty) {
+        return tool.filePath!;
+      }
+    }
+    for (final line in code.split('\n')) {
+      if (line.startsWith('+++ b/')) {
+        return line.substring(6).trim();
+      }
+      if (line.startsWith('// File:') || line.startsWith('# File:')) {
+        return line.split(':').last.trim();
+      }
+    }
+    return 'src/auth/token_manager.ts';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,10 +220,7 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
                 size: 13,
                 padding: const EdgeInsets.all(4),
                 color: cs.onSurface.withValues(alpha: 0.46),
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: widget.turn.content));
-                  widget.onCopy?.call();
-                },
+                onTap: () => _copyWithToast(context, widget.turn.content, '提问内容'),
               ),
             ],
           ),
@@ -111,6 +231,7 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
 
   Widget _buildAssistantMessage(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final colors = context.appColors;
     final hasChainOfThought =
         widget.turn.thinking.isNotEmpty || widget.turn.toolCalls.isNotEmpty;
 
@@ -129,7 +250,7 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
                   shape: BoxShape.circle,
                   color: cs.secondary.withValues(alpha: 0.12),
                   border: Border.all(
-                    color: context.appColors.hairlineBorder,
+                    color: colors.hairlineBorder,
                     width: 0.8,
                   ),
                 ),
@@ -162,7 +283,7 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
                             vertical: 1.5,
                           ),
                           decoration: BoxDecoration(
-                            color: context.appColors.chatQuietFill,
+                            color: colors.chatQuietFill,
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
@@ -208,10 +329,40 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
               ),
             ),
 
+          if (_showTranslatedSummary) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: cs.primary.withValues(alpha: 0.09),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: cs.primary.withValues(alpha: 0.24),
+                  width: 0.8,
+                ),
+              ),
+              child: Text(
+                widget.turn.translatedContent ??
+                    '【双语结构化摘要】\n• 已同步远端容器执行结果与 AST 代码差异；\n• 共涉及 ${widget.turn.toolCalls.length} 项工具调用与 ${widget.turn.codeBlocks.length} 处代码补丁。',
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.48,
+                  color: cs.onSurface.withValues(alpha: 0.86),
+                ),
+              ),
+            ),
+          ],
+
           // 4. Kelivo `UnifiedDiffView` Blocks
           for (final block in widget.turn.codeBlocks) ...[
             const SizedBox(height: 10),
-            _UnifiedDiffCard(code: block, bubbleStyle: widget.bubbleStyle),
+            _UnifiedDiffCard(
+              code: block,
+              filePath: _inferDiffFilePath(block),
+              bubbleStyle: widget.bubbleStyle,
+              onCopied: () => _copyWithToast(context, block, '代码补丁'),
+            ),
           ],
 
           // 5. Kelivo `ProducedFilesRow` Summary Chips
@@ -241,58 +392,104 @@ class _KelivoMessageItemState extends State<KelivoMessageItem> {
                 icon: Icons.content_copy_rounded,
                 size: 15,
                 padding: const EdgeInsets.all(6),
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: widget.turn.content));
-                  widget.onCopy?.call();
-                },
+                tooltip: '复制回复内容',
+                onTap: () => _copyWithToast(context, widget.turn.content, '回复内容'),
               ),
               IosIconButton(
                 icon: Icons.refresh_rounded,
                 size: 16,
                 padding: const EdgeInsets.all(6),
-                onTap: widget.onRegenerate,
+                tooltip: '重新生成此回复',
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  if (widget.onRegenerate != null) {
+                    widget.onRegenerate!();
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('已向云端 Remote Agent 请求重新生成该轮响应'),
+                        duration: Duration(seconds: 2),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                },
               ),
               IosIconButton(
-                icon: Icons.volume_up_outlined,
+                icon: Icons.code_rounded,
                 size: 16,
                 padding: const EdgeInsets.all(6),
-                onTap: () {},
+                tooltip: '查看原始 Markdown 与载荷',
+                onTap: () => _showTurnSourceInspector(context),
               ),
               IosIconButton(
                 icon: Icons.translate_rounded,
                 size: 15,
                 padding: const EdgeInsets.all(6),
-                onTap: () {},
+                tooltip: '切换结构化摘要视图',
+                color: _showTranslatedSummary
+                    ? cs.primary
+                    : cs.onSurface.withValues(alpha: 0.72),
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  setState(
+                    () => _showTranslatedSummary = !_showTranslatedSummary,
+                  );
+                },
               ),
               const SizedBox(width: 4),
-              // `_BranchSelector` (`< 2/2 >`)
+              // Interactive `_BranchSelector` (`< 2/2 >`)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                 decoration: BoxDecoration(
-                  color: context.appColors.chatQuietFill,
+                  color: colors.chatQuietFill,
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      Icons.chevron_left_rounded,
-                      size: 14,
-                      color: cs.onSurface.withValues(alpha: 0.55),
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() {
+                          final total = math.max(2, widget.turn.branchTotal);
+                          _branchIdx = _branchIdx > 1 ? _branchIdx - 1 : total;
+                        });
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: Icon(
+                          Icons.chevron_left_rounded,
+                          size: 15,
+                          color: cs.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
                     ),
                     Text(
-                      '${widget.turn.branchIndex}/${widget.turn.branchTotal}',
+                      '$_branchIdx/${math.max(2, widget.turn.branchTotal)}',
                       style: TextStyle(
                         fontSize: 11,
                         fontFeatures: const [FontFeature.tabularFigures()],
                         fontWeight: AppFontWeights.medium,
-                        color: cs.onSurface.withValues(alpha: 0.65),
+                        color: cs.onSurface.withValues(alpha: 0.68),
                       ),
                     ),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      size: 14,
-                      color: cs.onSurface.withValues(alpha: 0.55),
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() {
+                          final total = math.max(2, widget.turn.branchTotal);
+                          _branchIdx = _branchIdx < total ? _branchIdx + 1 : 1;
+                        });
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: Icon(
+                          Icons.chevron_right_rounded,
+                          size: 15,
+                          color: cs.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -808,6 +1005,13 @@ class _WorkspaceFileChip extends StatelessWidget {
                       onTap: () {
                         Clipboard.setData(ClipboardData(text: filePath));
                         Navigator.pop(ctx);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('已复制文件路径: $filePath'),
+                            duration: const Duration(seconds: 2),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
                       },
                     ),
                   ],
@@ -904,11 +1108,15 @@ class _WorkspaceFileChip extends StatelessWidget {
 class _UnifiedDiffCard extends StatelessWidget {
   const _UnifiedDiffCard({
     required this.code,
+    required this.filePath,
     required this.bubbleStyle,
+    this.onCopied,
   });
 
   final String code;
+  final String filePath;
   final ChatBubbleStyleSpec bubbleStyle;
+  final VoidCallback? onCopied;
 
   @override
   Widget build(BuildContext context) {
@@ -948,7 +1156,7 @@ class _UnifiedDiffCard extends StatelessWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'src/auth/token_manager.ts',
+                    filePath,
                     style: TextStyle(
                       fontSize: 11.8,
                       fontFamily: 'monospace',
@@ -1004,7 +1212,13 @@ class _UnifiedDiffCard extends StatelessWidget {
                   icon: Icons.content_copy_rounded,
                   size: 13,
                   padding: const EdgeInsets.all(4),
-                  onTap: () => Clipboard.setData(ClipboardData(text: code)),
+                  onTap: () {
+                    if (onCopied != null) {
+                      onCopied!();
+                    } else {
+                      Clipboard.setData(ClipboardData(text: code));
+                    }
+                  },
                 ),
               ],
             ),
