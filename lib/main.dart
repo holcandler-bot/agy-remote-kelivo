@@ -147,8 +147,8 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
   bool _needsLoginOnPage = true;
   bool _dismissedLoginBanner = false;
   double _webProgress = 0.0;
-  String _currentWebUrl = 'https://antigravity.google/remote-agents';
-  String _configuredHostUrl = 'https://antigravity.google/remote-agents';
+  String _currentWebUrl = RemoteHostPreset.officialWebUrl;
+  String _configuredHostUrl = RemoteHostPreset.officialWebUrl;
   String _userEmail = '';
   String _drawerSearchQuery = '';
 
@@ -179,13 +179,23 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
   Future<void> _loadAccountAndHostPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
+    var savedUrl = prefs.getString('configuredHostUrl') ??
+        RemoteHostPreset.officialWebUrl;
+    // 自动修复并迁移旧版导致 Google 400 报错的无效域名 (.google/remote-agents -> antigravity.google.com)
+    if (savedUrl.contains('antigravity.google/remote-agents') ||
+        savedUrl.contains('continue=https://antigravity.google/')) {
+      savedUrl = RemoteHostPreset.officialWebUrl;
+      await prefs.setString('configuredHostUrl', savedUrl);
+    }
     setState(() {
-      _configuredHostUrl = prefs.getString('configuredHostUrl') ??
-          'https://antigravity.google/remote-agents';
-      _currentWebUrl = _configuredHostUrl;
+      _configuredHostUrl = savedUrl;
+      _currentWebUrl = savedUrl;
       _isGoogleAuthenticated = prefs.getBool('isGoogleAuthenticated') ?? false;
       _userEmail = prefs.getString('userEmail') ?? '';
     });
+    await _webCtrl?.loadUrl(
+      urlRequest: URLRequest(url: WebUri(savedUrl)),
+    );
   }
 
   Future<void> _saveAccountState({
@@ -441,24 +451,27 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
     } catch (_) {}
   }
 
-  /// 一键打开内置 Google 账号登录页
+  /// 一键打开内置 Google 账号官方登录页 (使用 antigravity.google.com 经过验证的官方 ServiceLogin 地址，杜绝 400 报错)
   Future<void> _openGoogleLoginFlow() async {
-    final continueUrl = Uri.encodeComponent(_configuredHostUrl);
-    final loginUrl =
-        'https://accounts.google.com/ServiceLogin?continue=$continueUrl';
-    await _setWebViewVisible(true, targetUrl: loginUrl);
+    await _setWebViewVisible(
+      true,
+      targetUrl: RemoteHostPreset.officialLoginUrl,
+    );
   }
 
-  Future<void> _injectBridgeScript(InAppWebViewController controller) async {
+  Future<void> _injectBridgeScript(
+    InAppWebViewController controller,
+    WebUri? url,
+  ) async {
     try {
+      final host = (url?.host ?? '').toLowerCase();
+      if (host.contains('accounts.google.com') ||
+          host.contains('myaccount.google.com') ||
+          host.contains('ogs.google.com')) {
+        return;
+      }
       final jsCode = await rootBundle.loadString('assets/agy_bridge.js');
       await controller.evaluateJavascript(source: jsCode);
-      // 同步当前是否处于前台 WebView 模式
-      final freeze = !_showRawWebView;
-      await controller.evaluateJavascript(
-        source:
-            'window.__agyDisableFreeze = ${!freeze}; window.AgyBridge && window.AgyBridge.setFreeze($freeze);',
-      );
     } catch (_) {}
   }
 
@@ -468,14 +481,18 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
       final googleCookies = await cookieMgr.getCookies(
         url: WebUri('https://accounts.google.com'),
       );
+      final agyCookies = await cookieMgr.getCookies(
+        url: WebUri('https://antigravity.google.com'),
+      );
       final targetCookies = uri != null
           ? await cookieMgr.getCookies(url: uri)
           : <Cookie>[];
-      final allCookies = [...googleCookies, ...targetCookies];
+      final allCookies = [...googleCookies, ...agyCookies, ...targetCookies];
       final hasAuthCookie = allCookies.any(
         (c) =>
             c.name == 'SID' ||
             c.name == 'HSID' ||
+            c.name == 'SAPISID' ||
             c.name == '__Secure-1PSID' ||
             c.name == '__Secure-3PSID',
       );
@@ -485,6 +502,14 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
           _needsLoginOnPage = false;
         });
         await _saveAccountState(authenticated: true);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已检测到 Google 登录凭证，云端 Remote Agent 已激活！'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     } catch (_) {}
   }
@@ -858,8 +883,10 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                         initialSettings: InAppWebViewSettings(
                           // 剥离 `; wv` 以确保 Google OAuth 100% 允许登录个人 Google AI Pro/Ultra 账号
                           userAgent:
-                              'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
+                              'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
                           javaScriptEnabled: true,
+                          javaScriptCanOpenWindowsAutomatically: true,
+                          supportMultipleWindows: true,
                           domStorageEnabled: true,
                           databaseEnabled: true,
                           thirdPartyCookiesEnabled: true,
@@ -867,6 +894,13 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                           useWideViewPort: true,
                           loadWithOverviewMode: true,
                         ),
+                        onCreateWindow: (controller, createWindowAction) async {
+                          final req = createWindowAction.request;
+                          if (req.url != null) {
+                            await controller.loadUrl(urlRequest: req);
+                          }
+                          return true;
+                        },
                         onWebViewCreated: (controller) {
                           _webCtrl = controller;
                           controller.addJavaScriptHandler(
@@ -904,7 +938,7 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                             });
                           }
                           await _checkGoogleCookies(url);
-                          await _injectBridgeScript(controller);
+                          await _injectBridgeScript(controller, url);
                         },
                       ),
                     ),
@@ -1325,7 +1359,7 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                 });
                 await _saveAccountState(authenticated: true);
                 await _setWebViewVisible(false);
-                if (!context.mounted) return;
+                if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('已保存 Google 登录状态并切换回 Kelivo 原生极光界面'),
@@ -2066,7 +2100,8 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              '已自动剥离 WebView 标识 (; wv)，完美兼容 Google OAuth 2.0 登录验证，100% 消耗你的 Google AI Pro / Ultra 个人订阅内额度。',
+                              '已自动剥离 WebView 标识 (; wv)，完美兼容 Google OAuth 2.0 登录验证，100% 消耗你的 Google AI Pro / Ultra 个人订阅内额度。\n'
+                              '桥接诊断：${_webLoaded ? "WebView 已就绪" : "正在初始化 WebView"} · ${_needsLoginOnPage ? "当前页面检测到待登录状态" : "当前页面处于工作区状态"}',
                               style: TextStyle(
                                 fontSize: 12,
                                 height: 1.45,
@@ -2125,7 +2160,7 @@ class _RemoteAgentWorkspacePageState extends State<RemoteAgentWorkspacePage> {
                                       authenticated: false,
                                       email: '',
                                     );
-                                    if (!ctx.mounted) return;
+                                    if (!mounted) return;
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(
                                         content: Text('已清空全部 WebView Cookie 与登录状态'),
